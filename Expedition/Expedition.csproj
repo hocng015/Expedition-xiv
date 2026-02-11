@@ -5,12 +5,23 @@
     <Version>0.1.0.0</Version>
     <Description>Automated recipe workflow orchestrator - gathers and crafts any item via GatherBuddy Reborn and Artisan.</Description>
     <RootNamespace>Expedition</RootNamespace>
+    <AssemblyName>Expedition</AssemblyName>
     <Platforms>x64</Platforms>
     <Configurations>Debug;Release</Configurations>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <!-- Dalamud Plugin Manifest Properties -->
+  <PropertyGroup>
+    <DalamudPluginName>Expedition</DalamudPluginName>
+    <DalamudPluginPunchline>Automated gather-to-craft recipe workflow orchestrator.</DalamudPluginPunchline>
+    <DalamudPluginDescription>Orchestrates GatherBuddy Reborn and Artisan to fully automate the process of gathering materials and crafting any recipe in the game, including collectables, timed nodes, and multi-step dependency chains.</DalamudPluginDescription>
+    <DalamudPluginRepoUrl>https://github.com/hocng015/Expedition-xiv</DalamudPluginRepoUrl>
+    <DalamudPluginTags>crafting;gathering;automation;recipe;workflow;collectable</DalamudPluginTags>
   </PropertyGroup>
 
 </Project>

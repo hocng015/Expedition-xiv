@@ -1,0 +1,31 @@
+[
+  {
+    "$schema": "https://raw.githubusercontent.com/goatcorp/Dalamud/master/Dalamud/Configuration/PluginManifest/pluginmanifest.schema.json",
+    "Author": "Expedition Contributors",
+    "Name": "Expedition",
+    "Punchline": "Automated gather-to-craft recipe workflow orchestrator.",
+    "Description": "Orchestrates GatherBuddy Reborn and Artisan to fully automate the process of gathering materials and crafting any recipe in the game, including collectables, timed nodes, and multi-step dependency chains.",
+    "InternalName": "Expedition",
+    "AssemblyVersion": "0.1.0.0",
+    "RepoUrl": "https://github.com/hocng015/Expedition-xiv",
+    "ApplicableVersion": "any",
+    "Tags": [
+      "crafting",
+      "gathering",
+      "automation",
+      "recipe",
+      "workflow",
+      "collectable"
+    ],
+    "DalamudApiLevel": 14,
+    "LoadRequiredState": 0,
+    "LoadSync": false,
+    "CanUnloadAsync": false,
+    "LoadPriority": 0,
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadLinkInstall": "https://github.com/hocng015/Expedition-xiv/releases/latest/download/latest.zip",
+    "DownloadLinkTesting": "https://github.com/hocng015/Expedition-xiv/releases/latest/download/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/hocng015/Expedition-xiv/releases/latest/download/latest.zip"
+  }
+]

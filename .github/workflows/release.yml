@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Set version in csproj
+        shell: pwsh
+        run: |
+          $csproj = Get-Content Expedition/Expedition.csproj -Raw
+          $csproj = $csproj -replace '<Version>.*?</Version>', "<Version>${{ steps.version.outputs.version }}</Version>"
+          Set-Content Expedition/Expedition.csproj $csproj
+
+      - name: Set version in manifest
+        shell: pwsh
+        run: |
+          $manifest = Get-Content Expedition/Expedition.json -Raw | ConvertFrom-Json
+          $manifest.AssemblyVersion = "${{ steps.version.outputs.version }}"
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content Expedition/Expedition.json
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build Release
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Find latest.zip
+        id: find_zip
+        shell: bash
+        run: |
+          zip_path=$(find Expedition/bin -name "latest.zip" -type f | head -1)
+          if [ -z "$zip_path" ]; then
+            echo "latest.zip not found, creating manually..."
+            output_dir=$(find Expedition/bin/x64/Release -name "Expedition" -type d | head -1)
+            if [ -z "$output_dir" ]; then
+              echo "ERROR: Could not find Expedition output directory"
+              exit 1
+            fi
+            echo "zip_path=${output_dir}/latest.zip" >> $GITHUB_OUTPUT
+            echo "output_dir=${output_dir}" >> $GITHUB_OUTPUT
+            echo "needs_zip=true" >> $GITHUB_OUTPUT
+          else
+            echo "zip_path=${zip_path}" >> $GITHUB_OUTPUT
+            echo "needs_zip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create zip manually (fallback)
+        if: steps.find_zip.outputs.needs_zip == 'true'
+        shell: pwsh
+        run: |
+          $outputDir = "${{ steps.find_zip.outputs.output_dir }}"
+          $parentDir = Split-Path $outputDir -Parent
+          $files = Get-ChildItem $parentDir -File -Include *.dll,*.json -Recurse | Where-Object { $_.DirectoryName -eq $parentDir }
+          Compress-Archive -Path $files.FullName -DestinationPath "$outputDir/latest.zip" -Force
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Expedition v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.find_zip.outputs.zip_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update repo.json
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $repo = Get-Content repo.json -Raw | ConvertFrom-Json
+
+          foreach ($plugin in $repo) {
+            if ($plugin.InternalName -eq "Expedition") {
+              $plugin.AssemblyVersion = $ver
+            }
+          }
+
+          $repo | ConvertTo-Json -Depth 10 | Set-Content repo.json
+
+      - name: Commit repo.json update
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          git add repo.json
+          git diff --cached --quiet && echo "No changes to commit" || git commit -m "chore: update repo.json for v${{ steps.version.outputs.version }}"
+          git push origin main

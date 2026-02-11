@@ -3,7 +3,7 @@
   "Author": "Expedition Contributors",
   "Name": "Expedition",
   "Punchline": "Automated gather-to-craft recipe workflow orchestrator.",
-  "Description": "Orchestrates GatherBuddy Reborn and Artisan to fully automate the process of gathering materials and crafting any recipe in the game, including collectables.",
+  "Description": "Orchestrates GatherBuddy Reborn and Artisan to fully automate the process of gathering materials and crafting any recipe in the game, including collectables, timed nodes, and multi-step dependency chains.",
   "InternalName": "Expedition",
   "AssemblyVersion": "0.1.0.0",
   "RepoUrl": "https://github.com/hocng015/Expedition-xiv",
