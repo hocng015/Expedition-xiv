@@ -1,0 +1,16 @@
+<Project Sdk="Dalamud.NET.Sdk/14.0.1">
+
+  <PropertyGroup>
+    <Authors>Expedition Contributors</Authors>
+    <Version>0.1.0.0</Version>
+    <Description>Automated recipe workflow orchestrator - gathers and crafts any item via GatherBuddy Reborn and Artisan.</Description>
+    <RootNamespace>Expedition</RootNamespace>
+    <Platforms>x64</Platforms>
+    <Configurations>Debug;Release</Configurations>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

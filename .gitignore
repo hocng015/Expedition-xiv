@@ -1,0 +1,29 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.vs/
+.vs/
+
+## Build outputs
+*.dll
+*.pdb
+*.exe
+
+## NuGet
+packages/
+*.nupkg
+
+## IDE
+.idea/
+*.sln.DotSettings.user
+.vscode/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Dalamud
+dalamud/
