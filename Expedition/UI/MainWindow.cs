@@ -4,6 +4,7 @@ using ImGuiNET;
 using Expedition.Crafting;
 using Expedition.Gathering;
 using Expedition.RecipeResolver;
+using Expedition.Scheduling;
 using Expedition.Workflow;
 
 namespace Expedition.UI;
@@ -20,8 +21,8 @@ public sealed class MainWindow
     private RecipeNode? selectedRecipe;
     private ResolvedRecipe? previewResolution;
     private int craftQuantity = 1;
-    private int selectedTab;
     private bool showSettings;
+    private string logFilter = string.Empty;
 
     public bool IsOpen;
 
@@ -42,12 +43,17 @@ public sealed class MainWindow
     {
         if (!IsOpen) return;
 
-        ImGui.SetNextWindowSize(new Vector2(720, 560), ImGuiCond.FirstUseEver);
-        if (!ImGui.Begin($"Expedition###ExpeditionMain", ref IsOpen, ImGuiWindowFlags.MenuBar))
+        ImGui.SetNextWindowSize(new Vector2(780, 600), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSizeConstraints(new Vector2(600, 400), new Vector2(float.MaxValue, float.MaxValue));
+
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(12, 12));
+        if (!ImGui.Begin("Expedition###ExpeditionMain", ref IsOpen, ImGuiWindowFlags.MenuBar))
         {
+            ImGui.PopStyleVar();
             ImGui.End();
             return;
         }
+        ImGui.PopStyleVar();
 
         DrawMenuBar();
 
@@ -58,7 +64,7 @@ public sealed class MainWindow
             return;
         }
 
-        // Tab bar
+        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(6, 4));
         if (ImGui.BeginTabBar("ExpeditionTabs"))
         {
             if (ImGui.BeginTabItem("Recipe"))
@@ -87,68 +93,118 @@ public sealed class MainWindow
 
             ImGui.EndTabBar();
         }
+        ImGui.PopStyleVar();
 
         ImGui.End();
     }
 
+    // ──────────────────────────────────────────────
+    // Menu Bar
+    // ──────────────────────────────────────────────
+
     private void DrawMenuBar()
     {
-        if (ImGui.BeginMenuBar())
+        if (!ImGui.BeginMenuBar()) return;
+
+        var (gbr, artisan) = plugin.Ipc.GetAvailability();
+
+        // GBR status
+        Theme.StatusDot(gbr ? Theme.Success : Theme.Error, gbr ? "GBR" : "GBR");
+        ImGui.SameLine(0, Theme.PadLarge);
+
+        // Artisan status
+        Theme.StatusDot(artisan ? Theme.Success : Theme.Error, artisan ? "Artisan" : "Artisan");
+
+        if (!gbr || !artisan)
         {
-            // Plugin dependency status
-            var (gbr, artisan) = plugin.Ipc.GetAvailability();
-            var gbrColor = gbr ? new Vector4(0.3f, 1f, 0.3f, 1f) : new Vector4(1f, 0.3f, 0.3f, 1f);
-            var artColor = artisan ? new Vector4(0.3f, 1f, 0.3f, 1f) : new Vector4(1f, 0.3f, 0.3f, 1f);
-
-            ImGui.TextColored(gbrColor, gbr ? "GBR: OK" : "GBR: N/A");
-            ImGui.SameLine();
-            ImGui.TextColored(artColor, artisan ? "Artisan: OK" : "Artisan: N/A");
-
-            if (!gbr || !artisan)
-            {
-                ImGui.SameLine();
-                if (ImGui.SmallButton("Refresh"))
-                    plugin.Ipc.RefreshAvailability();
-            }
-
-            ImGui.EndMenuBar();
+            ImGui.SameLine(0, Theme.PadLarge);
+            if (ImGui.SmallButton("Refresh"))
+                plugin.Ipc.RefreshAvailability();
         }
+
+        // Eorzean time on the right side
+        if (Expedition.Config.ShowEorzeanTime)
+        {
+            var timeText = EorzeanTime.FormatCurrentTime();
+            var timeWidth = ImGui.CalcTextSize(timeText).X;
+            ImGui.SameLine(ImGui.GetWindowWidth() - timeWidth - 24);
+            ImGui.TextColored(Theme.TimedNode, timeText);
+        }
+
+        ImGui.EndMenuBar();
     }
 
-    // --- Recipe Tab ---
+    // ──────────────────────────────────────────────
+    // Recipe Tab
+    // ──────────────────────────────────────────────
 
     private void DrawRecipeTab()
     {
-        ImGui.Text("Search for a recipe:");
-        ImGui.SetNextItemWidth(-100);
-        if (ImGui.InputText("##RecipeSearch", ref searchQuery, 256, ImGuiInputTextFlags.EnterReturnsTrue))
-        {
+        // Search bar
+        ImGui.Spacing();
+        ImGui.SetNextItemWidth(-120);
+        var hint = "Search recipes...";
+        if (ImGui.InputTextWithHint("##RecipeSearch", hint, ref searchQuery, 256, ImGuiInputTextFlags.EnterReturnsTrue))
             DoSearch();
-        }
+
         ImGui.SameLine();
-        if (ImGui.Button("Search", new Vector2(90, 0)))
-        {
+        if (Theme.PrimaryButton("Search", new Vector2(105, 0)))
             DoSearch();
-        }
 
+        ImGui.Spacing();
         ImGui.Separator();
+        ImGui.Spacing();
 
-        // Two-column layout: results on left, details on right
+        // Two-column layout
         var avail = ImGui.GetContentRegionAvail();
+        var bottomBarHeight = 48f;
+        var contentHeight = avail.Y - bottomBarHeight;
 
-        // Left: Search results
-        ImGui.BeginChild("SearchResults", new Vector2(avail.X * 0.4f, avail.Y - 40), ImGuiChildFlags.Border);
+        // Left panel: Search results
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
+        ImGui.BeginChild("SearchResults", new Vector2(avail.X * 0.38f, contentHeight), ImGuiChildFlags.Border);
+        ImGui.PopStyleColor();
         {
-            foreach (var recipe in searchResults)
+            if (searchResults.Count == 0)
             {
-                var label = $"{recipe.ItemName} ({RecipeResolverService.GetCraftTypeName(recipe.CraftTypeId)} Lv{recipe.RequiredLevel})";
-                if (recipe.IsCollectable) label += " [C]";
-                if (recipe.IsExpert) label += " [E]";
+                ImGui.Spacing();
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                ImGui.TextColored(Theme.TextMuted, searchQuery.Length > 0
+                    ? "No results found."
+                    : "Type a recipe name to search.");
+            }
+            else
+            {
+                ImGui.TextColored(Theme.TextSecondary, $"  {searchResults.Count} results");
+                ImGui.Separator();
 
-                if (ImGui.Selectable(label, selectedRecipe?.RecipeId == recipe.RecipeId))
+                foreach (var recipe in searchResults)
                 {
-                    selectedRecipe = recipe;
-                    PreviewResolve();
+                    var isSelected = selectedRecipe?.RecipeId == recipe.RecipeId;
+
+                    // Build clean display label
+                    var className = RecipeResolverService.GetCraftTypeName(recipe.CraftTypeId);
+                    var label = $"{recipe.ItemName}##recipe{recipe.RecipeId}";
+
+                    if (ImGui.Selectable(label, isSelected))
+                    {
+                        selectedRecipe = recipe;
+                        PreviewResolve();
+                    }
+
+                    // Draw metadata on same line after the selectable
+                    ImGui.SameLine(ImGui.GetContentRegionAvail().X - 80);
+                    ImGui.TextColored(Theme.TextMuted, $"{className} {recipe.RequiredLevel}");
+
+                    // Badges on hover tooltip
+                    if (ImGui.IsItemHovered() && (recipe.IsCollectable || recipe.IsExpert || recipe.RequiresSpecialist))
+                    {
+                        ImGui.BeginTooltip();
+                        if (recipe.IsCollectable) ImGui.TextColored(Theme.Collectable, "Collectable");
+                        if (recipe.IsExpert) ImGui.TextColored(Theme.Expert, "Expert Recipe");
+                        if (recipe.RequiresSpecialist) ImGui.TextColored(Theme.Specialist, "Specialist Required");
+                        ImGui.EndTooltip();
+                    }
                 }
             }
         }
@@ -156,110 +212,227 @@ public sealed class MainWindow
 
         ImGui.SameLine();
 
-        // Right: Recipe details
-        ImGui.BeginChild("RecipeDetails", new Vector2(0, avail.Y - 40), ImGuiChildFlags.Border);
+        // Right panel: Recipe details
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
+        ImGui.BeginChild("RecipeDetails", new Vector2(0, contentHeight), ImGuiChildFlags.Border);
+        ImGui.PopStyleColor();
         {
             if (selectedRecipe != null)
-            {
                 DrawRecipeDetails();
-            }
             else
             {
-                ImGui.TextWrapped("Select a recipe from the search results to see details and start a workflow.");
+                var center = ImGui.GetContentRegionAvail();
+                ImGui.SetCursorPos(new Vector2(Theme.PadLarge, center.Y / 2 - 20));
+                ImGui.TextColored(Theme.TextMuted, "Select a recipe from the search results");
+                ImGui.SetCursorPosX(Theme.PadLarge);
+                ImGui.TextColored(Theme.TextMuted, "to view details and start a workflow.");
             }
         }
         ImGui.EndChild();
 
-        // Bottom: Start button
-        ImGui.Separator();
-        var canStart = selectedRecipe != null && plugin.WorkflowEngine.CurrentState == WorkflowState.Idle;
-
-        if (!canStart) ImGui.BeginDisabled();
-        if (ImGui.Button("Start Workflow", new Vector2(150, 30)))
-        {
-            if (selectedRecipe != null)
-            {
-                plugin.WorkflowEngine.Start(selectedRecipe, craftQuantity);
-            }
-        }
-        if (!canStart) ImGui.EndDisabled();
-
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(100);
-        ImGui.InputInt("Quantity", ref craftQuantity);
-        craftQuantity = Math.Max(1, Math.Min(craftQuantity, 9999));
-
-        if (plugin.WorkflowEngine.CurrentState != WorkflowState.Idle)
-        {
-            ImGui.SameLine();
-            if (ImGui.Button("Stop", new Vector2(80, 30)))
-            {
-                plugin.WorkflowEngine.Cancel();
-            }
-        }
+        // Bottom action bar
+        ImGui.Spacing();
+        DrawRecipeActionBar();
     }
 
     private void DrawRecipeDetails()
     {
         var recipe = selectedRecipe!;
 
-        ImGui.TextColored(new Vector4(1f, 0.9f, 0.4f, 1f), recipe.ItemName);
+        // Title
+        ImGui.Spacing();
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+        ImGui.PushFont(ImGui.GetFont()); // Same font but we'll use color for emphasis
+        ImGui.TextColored(Theme.Gold, recipe.ItemName);
+        ImGui.PopFont();
 
-        ImGui.Text($"Recipe ID: {recipe.RecipeId}  |  Yield: {recipe.YieldPerCraft}");
-        ImGui.Text($"Class: {RecipeResolverService.GetCraftTypeName(recipe.CraftTypeId)}  |  Level: {recipe.RequiredLevel}");
+        // Tags row
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+        if (recipe.IsCollectable)
+        {
+            Theme.InlineBadge("Collectable", Theme.Collectable);
+        }
+        if (recipe.IsExpert)
+        {
+            Theme.InlineBadge("Expert", Theme.Expert);
+        }
+        if (recipe.RequiresSpecialist)
+        {
+            Theme.InlineBadge("Specialist", Theme.Specialist);
+        }
+        if (recipe.RequiresMasterBook)
+        {
+            Theme.InlineBadge("Master Book", Theme.MasterBook);
+        }
+        if (recipe.IsCollectable || recipe.IsExpert || recipe.RequiresSpecialist || recipe.RequiresMasterBook)
+            ImGui.NewLine();
 
-        if (recipe.IsCollectable) ImGui.TextColored(new Vector4(0.4f, 0.8f, 1f, 1f), "Collectable");
-        if (recipe.IsExpert) ImGui.TextColored(new Vector4(1f, 0.5f, 0.5f, 1f), "Expert Recipe (RNG conditions!)");
-        if (recipe.RequiresSpecialist) ImGui.TextColored(new Vector4(1f, 0.6f, 0.8f, 1f), "Specialist Required");
-        if (recipe.RequiresMasterBook) ImGui.TextColored(new Vector4(1f, 0.8f, 0.4f, 1f), "Master Recipe Book Required");
-        if (recipe.RecipeDurability > 0) ImGui.Text($"Durability: {recipe.RecipeDurability}  |  Suggested: {recipe.SuggestedCraftsmanship}C/{recipe.SuggestedControl}Ctrl");
+        ImGui.Spacing();
 
+        // Stats grid
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+        Theme.KeyValue("Class:", RecipeResolverService.GetCraftTypeName(recipe.CraftTypeId), Theme.Accent);
+        ImGui.SameLine(0, Theme.PadLarge);
+        Theme.KeyValue("Level:", recipe.RequiredLevel.ToString(), Theme.Accent);
+        ImGui.SameLine(0, Theme.PadLarge);
+        Theme.KeyValue("Yield:", recipe.YieldPerCraft.ToString(), Theme.Accent);
+
+        if (recipe.RecipeDurability > 0)
+        {
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+            Theme.KeyValue("Durability:", recipe.RecipeDurability.ToString());
+            ImGui.SameLine(0, Theme.PadLarge);
+            Theme.KeyValue("Craftsmanship:", recipe.SuggestedCraftsmanship.ToString());
+            ImGui.SameLine(0, Theme.PadLarge);
+            Theme.KeyValue("Control:", recipe.SuggestedControl.ToString());
+        }
+
+        ImGui.Spacing();
         ImGui.Separator();
-        ImGui.Text("Direct Ingredients:");
+        ImGui.Spacing();
+
+        // Direct ingredients
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+        Theme.SectionHeader("Ingredients");
+        ImGui.Spacing();
 
         foreach (var ing in recipe.Ingredients)
         {
-            var flags = new List<string>();
-            if (ing.IsCraftable) flags.Add("Craftable");
-            if (ing.IsGatherable) flags.Add("Gatherable");
-            if (ing.IsCollectable) flags.Add("Collectable");
-            var flagStr = flags.Count > 0 ? $" [{string.Join(", ", flags)}]" : "";
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+            ImGui.TextColored(Theme.TextPrimary, $"x{ing.QuantityNeeded}");
+            ImGui.SameLine();
+            ImGui.Text(ing.ItemName);
 
-            ImGui.BulletText($"{ing.ItemName} x{ing.QuantityNeeded}{flagStr}");
+            // Small inline tags
+            ImGui.SameLine();
+            if (ing.IsCraftable) { ImGui.TextColored(Theme.Gold, "[Craft]"); ImGui.SameLine(); }
+            if (ing.IsGatherable) { ImGui.TextColored(Theme.Success, "[Gather]"); ImGui.SameLine(); }
+            if (ing.IsCollectable) { ImGui.TextColored(Theme.Collectable, "[Coll]"); ImGui.SameLine(); }
+            ImGui.NewLine();
         }
 
+        // Full material breakdown (resolved)
         if (previewResolution != null)
         {
+            ImGui.Spacing();
             ImGui.Separator();
-            ImGui.Text($"Full Material Breakdown (for x{craftQuantity}):");
+            ImGui.Spacing();
 
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+            Theme.SectionHeader($"Full Breakdown (x{craftQuantity})");
+            ImGui.Spacing();
+
+            // Gatherable materials
             if (previewResolution.GatherList.Count > 0)
             {
-                ImGui.TextColored(new Vector4(0.3f, 1f, 0.3f, 1f), "Gatherable:");
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                ImGui.TextColored(Theme.Success, "Gatherable Materials");
+                ImGui.Spacing();
+
                 foreach (var mat in previewResolution.GatherList)
                 {
-                    var owned = $" (have {mat.QuantityOwned})";
-                    ImGui.BulletText($"{mat.ItemName} x{mat.QuantityNeeded}{owned}");
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+
+                    // Quantity with owned indicator
+                    var remaining = mat.QuantityRemaining;
+                    var quantityColor = remaining == 0 ? Theme.Success : Theme.TextPrimary;
+                    ImGui.TextColored(quantityColor, $"x{mat.QuantityNeeded}");
+                    ImGui.SameLine();
+                    ImGui.Text(mat.ItemName);
+
+                    if (mat.QuantityOwned > 0)
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextColored(remaining == 0 ? Theme.SuccessDim : Theme.TextSecondary,
+                            $"(have {mat.QuantityOwned})");
+                    }
+
+                    // Flags
+                    if (mat.IsTimedNode)
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextColored(Theme.TimedNode, "[Timed]");
+                    }
+                    if (mat.IsCollectable)
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextColored(Theme.Collectable, "[Coll]");
+                    }
                 }
             }
 
-            if (previewResolution.CraftOrder.Count > 1) // >1 because the root recipe is always included
+            // Sub-recipes
+            if (previewResolution.CraftOrder.Count > 1)
             {
-                ImGui.TextColored(new Vector4(1f, 0.8f, 0.3f, 1f), "Sub-recipes (crafting order):");
+                ImGui.Spacing();
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                ImGui.TextColored(Theme.Gold, "Sub-Recipes (crafting order)");
+                ImGui.Spacing();
+
                 foreach (var step in previewResolution.CraftOrder.Take(previewResolution.CraftOrder.Count - 1))
                 {
-                    ImGui.BulletText($"{step.Recipe.ItemName} x{step.Quantity} ({RecipeResolverService.GetCraftTypeName(step.Recipe.CraftTypeId)})");
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+                    ImGui.TextColored(Theme.TextPrimary, $"x{step.Quantity}");
+                    ImGui.SameLine();
+                    ImGui.Text(step.Recipe.ItemName);
+                    ImGui.SameLine();
+                    ImGui.TextColored(Theme.TextMuted,
+                        $"({RecipeResolverService.GetCraftTypeName(step.Recipe.CraftTypeId)})");
                 }
             }
 
+            // Other materials
             if (previewResolution.OtherMaterials.Count > 0)
             {
-                ImGui.TextColored(new Vector4(1f, 0.5f, 0.5f, 1f), "Other (vendor/drops/etc.):");
+                ImGui.Spacing();
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                ImGui.TextColored(Theme.Warning, "Other Sources (vendor/drops)");
+                ImGui.Spacing();
+
                 foreach (var mat in previewResolution.OtherMaterials)
                 {
-                    ImGui.BulletText($"{mat.ItemName} x{mat.QuantityNeeded}");
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+                    ImGui.TextColored(Theme.TextPrimary, $"x{mat.QuantityNeeded}");
+                    ImGui.SameLine();
+                    ImGui.Text(mat.ItemName);
+                    if (mat.QuantityOwned > 0)
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextColored(Theme.TextSecondary, $"(have {mat.QuantityOwned})");
+                    }
                 }
             }
+        }
+    }
+
+    private void DrawRecipeActionBar()
+    {
+        var engine = plugin.WorkflowEngine;
+        var canStart = selectedRecipe != null && engine.CurrentState == WorkflowState.Idle;
+
+        if (!canStart) ImGui.BeginDisabled();
+        if (Theme.PrimaryButton("Start Workflow", new Vector2(140, 32)))
+        {
+            if (selectedRecipe != null)
+                engine.Start(selectedRecipe, craftQuantity);
+        }
+        if (!canStart) ImGui.EndDisabled();
+
+        ImGui.SameLine(0, Theme.Pad);
+        ImGui.SetNextItemWidth(100);
+        if (ImGui.InputInt("##Quantity", ref craftQuantity, 1, 10))
+        {
+            craftQuantity = Math.Clamp(craftQuantity, 1, 9999);
+            if (selectedRecipe != null) PreviewResolve();
+        }
+        ImGui.SameLine();
+        ImGui.TextColored(Theme.TextSecondary, "qty");
+
+        if (engine.CurrentState != WorkflowState.Idle && engine.CurrentState != WorkflowState.Completed)
+        {
+            ImGui.SameLine(0, Theme.PadLarge);
+            if (Theme.DangerButton("Stop", new Vector2(80, 32)))
+                engine.Cancel();
         }
     }
 
@@ -287,210 +460,417 @@ public sealed class MainWindow
         }
     }
 
-    // --- Workflow Tab ---
+    // ──────────────────────────────────────────────
+    // Workflow Tab
+    // ──────────────────────────────────────────────
 
     private void DrawWorkflowTab()
     {
         var engine = plugin.WorkflowEngine;
 
-        // Eorzean time
-        if (Expedition.Config.ShowEorzeanTime)
+        ImGui.Spacing();
+
+        if (engine.CurrentState == WorkflowState.Idle && engine.CurrentRecipe == null)
         {
-            ImGui.TextColored(new Vector4(0.6f, 0.8f, 1f, 1f), Scheduling.EorzeanTime.FormatCurrentTime());
-            ImGui.SameLine();
+            DrawWorkflowIdleState();
+            return;
         }
 
-        // Status header
-        var stateColor = engine.CurrentState switch
-        {
-            WorkflowState.Idle => new Vector4(0.5f, 0.5f, 0.5f, 1f),
-            WorkflowState.Completed => new Vector4(0.3f, 1f, 0.3f, 1f),
-            WorkflowState.Error => new Vector4(1f, 0.3f, 0.3f, 1f),
-            WorkflowState.Paused => new Vector4(1f, 0.7f, 0.2f, 1f),
-            _ => new Vector4(1f, 0.9f, 0.4f, 1f),
-        };
+        // Phase pipeline
+        DrawPhasePipeline(engine);
 
-        ImGui.TextColored(stateColor, $"State: {engine.CurrentState}");
-        if (engine.CurrentPhase != WorkflowPhase.None)
-        {
-            ImGui.SameLine();
-            ImGui.Text($"  Phase: {engine.CurrentPhase}");
-        }
+        ImGui.Spacing();
 
-        if (engine.CurrentRecipe != null)
-            ImGui.Text($"Target: {engine.CurrentRecipe.ItemName} x{engine.TargetQuantity}");
+        // Status card
+        DrawWorkflowStatusCard(engine);
 
-        if (!string.IsNullOrEmpty(engine.StatusMessage))
-            ImGui.TextWrapped(engine.StatusMessage);
+        ImGui.Spacing();
 
         // Health indicators
-        if (engine.LastDurabilityReport != null)
+        DrawHealthIndicators(engine);
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // Progress section
+        DrawProgressSection(engine);
+
+        // Validation warnings
+        DrawValidationSection(engine);
+
+        // Controls
+        ImGui.Spacing();
+        DrawWorkflowControls(engine);
+    }
+
+    private void DrawWorkflowIdleState()
+    {
+        ImGui.Spacing();
+        ImGui.Spacing();
+        var avail = ImGui.GetContentRegionAvail();
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + avail.Y / 3);
+
+        var text = "No active workflow";
+        var textSize = ImGui.CalcTextSize(text);
+        ImGui.SetCursorPosX((avail.X - textSize.X) / 2);
+        ImGui.TextColored(Theme.TextMuted, text);
+
+        var subText = "Search for a recipe in the Recipe tab to get started.";
+        var subSize = ImGui.CalcTextSize(subText);
+        ImGui.SetCursorPosX((avail.X - subSize.X) / 2);
+        ImGui.TextColored(Theme.TextDisabled, subText);
+    }
+
+    private void DrawPhasePipeline(WorkflowEngine engine)
+    {
+        var phase = engine.CurrentPhase;
+        var state = engine.CurrentState;
+        var isComplete = state == WorkflowState.Completed;
+        var isError = state == WorkflowState.Error;
+        var isPaused = state == WorkflowState.Paused;
+
+        // Phase steps
+        var phases = new[]
         {
-            var durColor = engine.LastDurabilityReport.LowestPercent switch
-            {
-                0 => new Vector4(1f, 0f, 0f, 1f),
-                < 20 => new Vector4(1f, 0.3f, 0.3f, 1f),
-                < 50 => new Vector4(1f, 0.9f, 0.4f, 1f),
-                _ => new Vector4(0.3f, 1f, 0.3f, 1f),
-            };
-            ImGui.TextColored(durColor, engine.LastDurabilityReport.StatusText);
+            ("Resolve", WorkflowPhase.Resolving),
+            ("Validate", WorkflowPhase.Validating),
+            ("Inventory", WorkflowPhase.CheckingInventory),
+            ("Gather", WorkflowPhase.Gathering),
+            ("Craft", WorkflowPhase.Crafting),
+        };
+
+        var phaseIndex = Array.FindIndex(phases, p => p.Item2 == phase);
+        for (var i = 0; i < phases.Length; i++)
+        {
+            var (label, p) = phases[i];
+            var isCurrent = p == phase && !isComplete;
+            var isDone = isComplete || (phaseIndex >= 0 && i < phaseIndex);
+
+            Theme.PipelineStep(label, isCurrent, isDone, i == 0);
+            ImGui.SameLine(0, 0);
         }
 
-        if (engine.LastBuffDiagnostic != null)
-            ImGui.Text(engine.LastBuffDiagnostic.FoodStatusText);
+        // Terminal state indicator
+        if (isComplete)
+        {
+            ImGui.SameLine(0, Theme.Pad);
+            ImGui.TextColored(Theme.Success, "Complete");
+        }
+        else if (isError)
+        {
+            ImGui.SameLine(0, Theme.Pad);
+            ImGui.TextColored(Theme.Error, "Error");
+        }
+        else if (isPaused)
+        {
+            ImGui.SameLine(0, Theme.Pad);
+            ImGui.TextColored(Theme.PhasePaused, "Paused");
+        }
 
-        ImGui.Separator();
+        ImGui.NewLine();
+    }
 
+    private void DrawWorkflowStatusCard(WorkflowEngine engine)
+    {
+        Theme.BeginCard("StatusCard", 0);
+        {
+            ImGui.Spacing();
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+
+            // Target item
+            if (engine.CurrentRecipe != null)
+            {
+                Theme.KeyValue("Target:", $"{engine.CurrentRecipe.ItemName} x{engine.TargetQuantity}", Theme.Gold);
+            }
+
+            // Elapsed time
+            if (engine.StartTime.HasValue && engine.CurrentState != WorkflowState.Idle)
+            {
+                var elapsed = DateTime.Now - engine.StartTime.Value;
+                ImGui.SameLine(0, Theme.PadLarge);
+                Theme.KeyValue("Elapsed:", $"{elapsed.Hours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}", Theme.TextSecondary);
+            }
+
+            // Status message
+            if (!string.IsNullOrEmpty(engine.StatusMessage))
+            {
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                ImGui.TextWrapped(engine.StatusMessage);
+            }
+
+            ImGui.Spacing();
+        }
+        Theme.EndCard();
+    }
+
+    private void DrawHealthIndicators(WorkflowEngine engine)
+    {
+        var showDurability = engine.LastDurabilityReport != null;
+        var showFood = engine.LastBuffDiagnostic != null;
+        if (!showDurability && !showFood) return;
+
+        // Inline health row
+        if (showDurability)
+        {
+            var dur = engine.LastDurabilityReport!;
+            var durColor = dur.LowestPercent switch
+            {
+                0 => Theme.Critical,
+                < 20 => Theme.Error,
+                < 50 => Theme.Warning,
+                _ => Theme.Success,
+            };
+
+            Theme.StatusDot(durColor, $"Durability: {dur.LowestPercent}%");
+            if (showFood) ImGui.SameLine(0, Theme.PadLarge);
+        }
+
+        if (showFood)
+        {
+            var buff = engine.LastBuffDiagnostic!;
+            var foodColor = buff.HasFood
+                ? (buff.FoodExpiringSoon ? Theme.Warning : Theme.Success)
+                : Theme.TextMuted;
+
+            Theme.StatusDot(foodColor, buff.FoodStatusText);
+        }
+    }
+
+    private void DrawProgressSection(WorkflowEngine engine)
+    {
         // Gathering progress
         if (engine.CurrentPhase == WorkflowPhase.Gathering || engine.CurrentState == WorkflowState.Gathering)
         {
-            ImGui.TextColored(new Vector4(0.3f, 1f, 0.3f, 1f), "Gathering Progress:");
+            Theme.SectionHeader("Gathering", Theme.Success);
+            ImGui.Spacing();
             DrawGatheringProgress();
+            ImGui.Spacing();
         }
 
         // Crafting progress
         if (engine.CurrentPhase == WorkflowPhase.Crafting || engine.CurrentState == WorkflowState.Crafting)
         {
-            ImGui.TextColored(new Vector4(1f, 0.8f, 0.3f, 1f), "Crafting Progress:");
+            Theme.SectionHeader("Crafting", Theme.Gold);
+            ImGui.Spacing();
             DrawCraftingProgress();
-        }
-
-        ImGui.Separator();
-
-        // Validation warnings
-        if (engine.LastValidation != null && engine.LastValidation.HasWarnings)
-        {
-            if (ImGui.CollapsingHeader("Validation Warnings"))
-            {
-                foreach (var w in engine.LastValidation.Warnings)
-                {
-                    var wColor = w.Severity switch
-                    {
-                        PlayerState.Severity.Critical => new Vector4(1f, 0f, 0f, 1f),
-                        PlayerState.Severity.Error => new Vector4(1f, 0.3f, 0.3f, 1f),
-                        PlayerState.Severity.Warning => new Vector4(1f, 0.9f, 0.4f, 1f),
-                        _ => new Vector4(0.7f, 0.7f, 0.7f, 1f),
-                    };
-                    ImGui.TextColored(wColor, $"[{w.Category}] {w.Message}");
-                }
-            }
-        }
-
-        // Controls
-        var isRunning = engine.CurrentState != WorkflowState.Idle &&
-                        engine.CurrentState != WorkflowState.Completed &&
-                        engine.CurrentState != WorkflowState.Error &&
-                        engine.CurrentState != WorkflowState.Paused;
-
-        if (isRunning)
-        {
-            if (ImGui.Button("Cancel Workflow", new Vector2(150, 30)))
-                engine.Cancel();
-        }
-
-        if (engine.CurrentState == WorkflowState.Paused)
-        {
-            if (ImGui.Button("Resume", new Vector2(100, 30)))
-                engine.Resume();
-            ImGui.SameLine();
-            if (ImGui.Button("Cancel", new Vector2(100, 30)))
-                engine.Cancel();
-        }
-
-        if (engine.CurrentState == WorkflowState.Error)
-        {
-            ImGui.SameLine();
-            if (ImGui.Button("Reset", new Vector2(80, 30)))
-                engine.Cancel();
+            ImGui.Spacing();
         }
     }
 
     private void DrawGatheringProgress()
     {
         var orch = plugin.GatheringOrchestrator;
+        if (orch.Tasks.Count == 0) return;
+
+        // Overall progress
+        var completedCount = orch.Tasks.Count(t => t.Status == GatheringTaskStatus.Completed);
+        var totalCount = orch.Tasks.Count;
+        var overallFraction = totalCount > 0 ? (float)completedCount / totalCount : 0;
+        Theme.ProgressBar(overallFraction, Theme.AccentDim,
+            $"{completedCount}/{totalCount} items", 6);
+        ImGui.Spacing();
+
+        // Individual tasks
         foreach (var task in orch.Tasks)
         {
-            var statusIcon = task.Status switch
-            {
-                GatheringTaskStatus.Completed => "[Done]",
-                GatheringTaskStatus.InProgress => "[>>>]",
-                GatheringTaskStatus.Failed => "[FAIL]",
-                GatheringTaskStatus.Skipped => "[Skip]",
-                _ => "[....]",
-            };
+            DrawGatheringTaskRow(task);
+        }
+    }
 
-            var color = task.Status switch
-            {
-                GatheringTaskStatus.Completed => new Vector4(0.3f, 1f, 0.3f, 1f),
-                GatheringTaskStatus.InProgress => new Vector4(1f, 0.9f, 0.4f, 1f),
-                GatheringTaskStatus.Failed => new Vector4(1f, 0.3f, 0.3f, 1f),
-                _ => new Vector4(0.7f, 0.7f, 0.7f, 1f),
-            };
+    private void DrawGatheringTaskRow(GatheringTask task)
+    {
+        var (icon, color) = task.Status switch
+        {
+            GatheringTaskStatus.Completed => ("  ", Theme.Success),
+            GatheringTaskStatus.InProgress => ("  ", Theme.Accent),
+            GatheringTaskStatus.WaitingForTimedNode => ("  ", Theme.TimedNode),
+            GatheringTaskStatus.Failed => ("  ", Theme.Error),
+            GatheringTaskStatus.Skipped => ("  ", Theme.TextMuted),
+            _ => ("  ", Theme.TextSecondary),
+        };
 
-            ImGui.TextColored(color, $"  {statusIcon} {task.ItemName}: {task.QuantityGathered}/{task.QuantityNeeded}");
+        // Status dot + name
+        Theme.StatusDot(color, "");
+        ImGui.SameLine(0, 0);
+        ImGui.Text(task.ItemName);
 
-            if (task.Status == GatheringTaskStatus.InProgress)
-            {
-                var progress = task.QuantityNeeded > 0
-                    ? (float)task.QuantityGathered / task.QuantityNeeded
-                    : 0f;
-                ImGui.ProgressBar(progress, new Vector2(-1, 0), $"{task.QuantityGathered}/{task.QuantityNeeded}");
-            }
+        // Progress count on the right
+        var progressText = $"{task.QuantityGathered}/{task.QuantityNeeded}";
+        var progressWidth = ImGui.CalcTextSize(progressText).X;
+        ImGui.SameLine(ImGui.GetContentRegionMax().X - progressWidth - Theme.Pad);
+        ImGui.TextColored(task.IsComplete ? Theme.SuccessDim : Theme.TextSecondary, progressText);
+
+        // Progress bar for active task
+        if (task.Status == GatheringTaskStatus.InProgress && task.QuantityNeeded > 0)
+        {
+            var fraction = (float)task.QuantityGathered / task.QuantityNeeded;
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 20);
+            ImGui.PushItemWidth(-Theme.Pad);
+            Theme.ProgressBar(fraction, Theme.Accent, null, 4);
+            ImGui.PopItemWidth();
+        }
+
+        // Error message
+        if (task.Status == GatheringTaskStatus.Failed && task.ErrorMessage != null)
+        {
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 20);
+            ImGui.TextColored(Theme.ErrorDim, task.ErrorMessage);
         }
     }
 
     private void DrawCraftingProgress()
     {
         var orch = plugin.CraftingOrchestrator;
+        if (orch.Tasks.Count == 0) return;
+
+        // Overall progress
+        var completedCount = orch.Tasks.Count(t => t.Status == CraftingTaskStatus.Completed);
+        var totalCount = orch.Tasks.Count;
+        var overallFraction = totalCount > 0 ? (float)completedCount / totalCount : 0;
+        Theme.ProgressBar(overallFraction, Theme.GoldDim,
+            $"{completedCount}/{totalCount} recipes", 6);
+        ImGui.Spacing();
+
         foreach (var task in orch.Tasks)
         {
-            var statusIcon = task.Status switch
-            {
-                CraftingTaskStatus.Completed => "[Done]",
-                CraftingTaskStatus.InProgress => "[>>>]",
-                CraftingTaskStatus.WaitingForArtisan => "[Wait]",
-                CraftingTaskStatus.Failed => "[FAIL]",
-                CraftingTaskStatus.Skipped => "[Skip]",
-                _ => "[....]",
-            };
-
-            var color = task.Status switch
-            {
-                CraftingTaskStatus.Completed => new Vector4(0.3f, 1f, 0.3f, 1f),
-                CraftingTaskStatus.InProgress or CraftingTaskStatus.WaitingForArtisan => new Vector4(1f, 0.9f, 0.4f, 1f),
-                CraftingTaskStatus.Failed => new Vector4(1f, 0.3f, 0.3f, 1f),
-                _ => new Vector4(0.7f, 0.7f, 0.7f, 1f),
-            };
-
-            var className = RecipeResolverService.GetCraftTypeName(task.CraftTypeId);
-            ImGui.TextColored(color, $"  {statusIcon} {task.ItemName} x{task.Quantity} ({className})");
+            DrawCraftingTaskRow(task);
         }
     }
 
-    // --- Log Tab ---
+    private void DrawCraftingTaskRow(CraftingTask task)
+    {
+        var color = task.Status switch
+        {
+            CraftingTaskStatus.Completed => Theme.Success,
+            CraftingTaskStatus.InProgress or CraftingTaskStatus.WaitingForArtisan => Theme.Accent,
+            CraftingTaskStatus.Failed => Theme.Error,
+            CraftingTaskStatus.Skipped => Theme.TextMuted,
+            _ => Theme.TextSecondary,
+        };
+
+        Theme.StatusDot(color, "");
+        ImGui.SameLine(0, 0);
+        ImGui.Text(task.ItemName);
+
+        ImGui.SameLine();
+        ImGui.TextColored(Theme.TextMuted,
+            $"x{task.Quantity} ({RecipeResolverService.GetCraftTypeName(task.CraftTypeId)})");
+
+        // Error message
+        if (task.Status == CraftingTaskStatus.Failed && task.ErrorMessage != null)
+        {
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 20);
+            ImGui.TextColored(Theme.ErrorDim, task.ErrorMessage);
+        }
+    }
+
+    private void DrawValidationSection(WorkflowEngine engine)
+    {
+        if (engine.LastValidation == null || !engine.LastValidation.HasWarnings) return;
+
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        var warningCount = engine.LastValidation.Warnings.Count;
+        var hasErrors = engine.LastValidation.HasErrors;
+        var headerColor = hasErrors ? Theme.Error : Theme.Warning;
+
+        ImGui.PushStyleColor(ImGuiCol.Header, new Vector4(headerColor.X, headerColor.Y, headerColor.Z, 0.15f));
+        if (ImGui.CollapsingHeader($"Warnings ({warningCount})###ValidationWarnings"))
+        {
+            ImGui.Spacing();
+            foreach (var w in engine.LastValidation.Warnings)
+            {
+                var severityColor = Theme.SeverityColor(w.Severity);
+
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                Theme.StatusDot(severityColor, "");
+                ImGui.SameLine(0, 0);
+                ImGui.TextColored(Theme.TextSecondary, $"[{w.Category}]");
+                ImGui.SameLine();
+                ImGui.TextWrapped(w.Message);
+            }
+            ImGui.Spacing();
+        }
+        ImGui.PopStyleColor();
+    }
+
+    private void DrawWorkflowControls(WorkflowEngine engine)
+    {
+        var state = engine.CurrentState;
+
+        if (state == WorkflowState.Paused)
+        {
+            if (Theme.PrimaryButton("Resume", new Vector2(120, 32)))
+                engine.Resume();
+            ImGui.SameLine(0, Theme.Pad);
+            if (Theme.DangerButton("Cancel", new Vector2(120, 32)))
+                engine.Cancel();
+        }
+        else if (state == WorkflowState.Error || state == WorkflowState.Completed)
+        {
+            if (Theme.SecondaryButton("Reset", new Vector2(120, 32)))
+                engine.Cancel();
+        }
+        else if (state != WorkflowState.Idle)
+        {
+            if (Theme.DangerButton("Cancel Workflow", new Vector2(160, 32)))
+                engine.Cancel();
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    // Log Tab
+    // ──────────────────────────────────────────────
 
     private void DrawLogTab()
     {
         var engine = plugin.WorkflowEngine;
 
-        if (ImGui.Button("Clear Log"))
+        // Controls row
+        ImGui.Spacing();
+        ImGui.SetNextItemWidth(200);
+        ImGui.InputTextWithHint("##LogFilter", "Filter...", ref logFilter, 128);
+        ImGui.SameLine();
+        if (Theme.SecondaryButton("Clear", new Vector2(60, 0)))
             engine.Log.Clear();
+        ImGui.SameLine();
+        ImGui.TextColored(Theme.TextMuted, $"{engine.Log.Count} entries");
 
+        ImGui.Spacing();
         ImGui.Separator();
+        ImGui.Spacing();
 
+        // Log entries
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
         ImGui.BeginChild("LogScroll", Vector2.Zero, ImGuiChildFlags.None, ImGuiWindowFlags.HorizontalScrollbar);
+        ImGui.PopStyleColor();
+
+        var hasFilter = !string.IsNullOrWhiteSpace(logFilter);
+
         foreach (var entry in engine.Log)
         {
-            if (entry.Contains("[ERROR]"))
-                ImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), entry);
+            if (hasFilter && !entry.Contains(logFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            Vector4 color;
+            if (entry.Contains("[ERROR]") || entry.Contains("[CRITICAL]"))
+                color = Theme.Error;
             else if (entry.Contains("[Warning]") || entry.Contains("[!]"))
-                ImGui.TextColored(new Vector4(1f, 0.9f, 0.4f, 1f), entry);
+                color = Theme.Warning;
+            else if (entry.Contains("[Health]"))
+                color = Theme.TimedNode;
+            else if (entry.Contains("[Info]") || entry.Contains("[Buff]"))
+                color = Theme.TextSecondary;
             else
-                ImGui.Text(entry);
+                color = Theme.TextPrimary;
+
+            ImGui.TextColored(color, entry);
         }
 
-        // Auto-scroll to bottom
-        if (ImGui.GetScrollY() >= ImGui.GetScrollMaxY())
+        // Auto-scroll
+        if (ImGui.GetScrollY() >= ImGui.GetScrollMaxY() - 10)
             ImGui.SetScrollHereY(1.0f);
 
         ImGui.EndChild();

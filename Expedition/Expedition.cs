@@ -56,7 +56,7 @@ public sealed class Expedition : IDalamudPlugin
             Config);
 
         mainWindow = new MainWindow(this);
-        overlayWindow = new OverlayWindow(WorkflowEngine);
+        overlayWindow = new OverlayWindow(WorkflowEngine, this);
 
         DalamudApi.CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
