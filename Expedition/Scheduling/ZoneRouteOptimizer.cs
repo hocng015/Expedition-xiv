@@ -1,0 +1,106 @@
+using Expedition.Gathering;
+
+namespace Expedition.Scheduling;
+
+/// <summary>
+/// Optimizes gathering task order to minimize zone transitions.
+///
+/// Pain points addressed:
+/// - Recipes requiring materials from 4+ zones means 4+ teleports + loading screens
+/// - Each zone transition costs Gil for teleport + real time for loading
+/// - Items in the same zone should be gathered together
+/// - Timed nodes override zone grouping (window priority > zone efficiency)
+/// - GBR handles navigation within zones, but we control the order of targets
+/// </summary>
+public sealed class ZoneRouteOptimizer
+{
+    /// <summary>
+    /// Groups gathering tasks by zone and reorders them to minimize transitions.
+    /// Timed/unspoiled items retain priority regardless of zone grouping.
+    /// </summary>
+    public static List<GatheringTask> OptimizeRoute(IReadOnlyList<GatheringTask> tasks)
+    {
+        // Separate timed and normal tasks
+        var timed = new List<GatheringTask>();
+        var normal = new List<GatheringTask>();
+
+        foreach (var task in tasks)
+        {
+            if (task.IsTimedNode || task.IsAetherialReductionSource)
+                timed.Add(task);
+            else
+                normal.Add(task);
+        }
+
+        // Group normal tasks by zone to minimize zone transitions
+        var groupedNormal = normal
+            .GroupBy(t => t.GatherZoneId)
+            .SelectMany(g => g)
+            .ToList();
+
+        // Build final list: timed items can be interleaved based on Eorzean time,
+        // but normal items should be zone-clustered.
+        var result = new List<GatheringTask>();
+
+        // Start with any currently-active timed nodes
+        result.AddRange(timed.Where(t =>
+            t.SpawnHours != null &&
+            t.SpawnHours.Any(h => EorzeanTime.IsWithinWindow(h, t.IsAetherialReductionSource ? 4 : 2))));
+
+        // Then normal tasks grouped by zone
+        result.AddRange(groupedNormal);
+
+        // Then remaining timed tasks (will be scheduled by NodeScheduler when their window opens)
+        var alreadyAdded = new HashSet<uint>(result.Select(t => t.ItemId));
+        result.AddRange(timed.Where(t => !alreadyAdded.Contains(t.ItemId)));
+
+        return result;
+    }
+
+    /// <summary>
+    /// Estimates total teleport costs for a gathering route.
+    /// </summary>
+    public static int EstimateTeleportCosts(IReadOnlyList<GatheringTask> orderedTasks)
+    {
+        var transitions = 0;
+        uint lastZone = 0;
+
+        foreach (var task in orderedTasks)
+        {
+            if (task.GatherZoneId != lastZone && lastZone != 0)
+                transitions++;
+            lastZone = task.GatherZoneId;
+        }
+
+        // Rough estimate: ~500 Gil per teleport average
+        return transitions * 500;
+    }
+
+    /// <summary>
+    /// Returns a summary of zone transitions in the current route.
+    /// </summary>
+    public static List<string> GetRouteDescription(IReadOnlyList<GatheringTask> orderedTasks)
+    {
+        var desc = new List<string>();
+        uint currentZone = 0;
+        var itemsInZone = 0;
+
+        foreach (var task in orderedTasks)
+        {
+            if (task.GatherZoneId != currentZone)
+            {
+                if (currentZone != 0)
+                    desc.Add($"  Zone {currentZone}: {itemsInZone} items");
+
+                currentZone = task.GatherZoneId;
+                itemsInZone = 0;
+            }
+            itemsInZone++;
+        }
+
+        if (currentZone != 0)
+            desc.Add($"  Zone {currentZone}: {itemsInZone} items");
+
+        return desc;
+    }
+}

@@ -2,6 +2,7 @@ namespace Expedition.RecipeResolver;
 
 /// <summary>
 /// Represents a single material needed to craft something.
+/// Extended with timed node, zone, and aethersand metadata.
 /// </summary>
 public sealed class MaterialRequirement
 {
@@ -34,6 +35,30 @@ public sealed class MaterialRequirement
 
     /// <summary>The type of gathering class needed, if gatherable.</summary>
     public GatherType GatherType { get; init; } = GatherType.None;
+
+    // --- Timed Node Metadata ---
+
+    /// <summary>True if this item only spawns at specific Eorzean times.</summary>
+    public bool IsTimedNode { get; init; }
+
+    /// <summary>Eorzean hours this item's node spawns at.</summary>
+    public int[]? SpawnHours { get; init; }
+
+    /// <summary>True if obtained from ephemeral nodes (Aetherial Reduction source).</summary>
+    public bool IsAetherialReductionSource { get; init; }
+
+    // --- Zone Information ---
+
+    /// <summary>TerritoryType ID of the gathering zone.</summary>
+    public uint GatherZoneId { get; init; }
+
+    /// <summary>Display name of the gathering zone.</summary>
+    public string GatherZoneName { get; init; } = string.Empty;
+
+    // --- Crystal Classification ---
+
+    /// <summary>True if this is a crystal/shard/cluster elemental catalyst.</summary>
+    public bool IsCrystal { get; init; }
 
     public override string ToString()
         => $"{ItemName} (x{QuantityRemaining}/{QuantityNeeded})";

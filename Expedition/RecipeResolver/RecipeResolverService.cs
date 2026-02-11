@@ -250,6 +250,9 @@ public sealed class RecipeResolverService
                 subRecipes.Add(subNode);
             }
 
+            var isCrystal = IsCrystalItem(itemName);
+            var isAethersand = Gathering.AetherialReductionManager.IsAethersandItem(itemName);
+
             ingredients.Add(new MaterialRequirement
             {
                 ItemId = ingredientItem.RowId,
@@ -260,8 +263,12 @@ public sealed class RecipeResolverService
                 IsCollectable = ingredientItemRow.Value.IsCollectable,
                 RecipeId = subRecipeId,
                 GatherType = gatherType,
+                IsCrystal = isCrystal,
+                IsAetherialReductionSource = isAethersand,
             });
         }
+
+        var recipeLevelRow = recipe.RecipeLevelTable.Value;
 
         return new RecipeNode
         {
@@ -270,9 +277,15 @@ public sealed class RecipeResolverService
             RecipeId = recipe.RowId,
             YieldPerCraft = Math.Max(1, (int)recipe.AmountResult),
             CraftTypeId = (int)recipe.CraftType.RowId,
-            RequiredLevel = recipe.RecipeLevelTable.Value.ClassJobLevel,
+            RequiredLevel = recipeLevelRow.ClassJobLevel,
             IsCollectable = resultItem.IsCollectable,
             IsExpert = recipe.IsExpert,
+            RequiresSpecialist = recipe.IsSpecializationRequired,
+            RecipeDurability = recipeLevelRow.Durability * recipe.DurabilityFactor / 100,
+            SuggestedCraftsmanship = recipeLevelRow.SuggestedCraftsmanship,
+            SuggestedControl = recipeLevelRow.SuggestedControl,
+            RequiresMasterBook = recipe.SecretRecipeBook.RowId != 0,
+            MasterBookId = recipe.SecretRecipeBook.RowId,
             Ingredients = ingredients,
             SubRecipes = subRecipes,
         };
@@ -291,6 +304,11 @@ public sealed class RecipeResolverService
             }
         }
         return GatherType.None;
+    }
+
+    private static bool IsCrystalItem(string name)
+    {
+        return name.Contains("Shard") || name.Contains("Crystal") || name.Contains("Cluster");
     }
 
     /// <summary>

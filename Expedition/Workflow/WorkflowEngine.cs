@@ -1,21 +1,32 @@
 using Expedition.Crafting;
 using Expedition.Gathering;
 using Expedition.Inventory;
+using Expedition.PlayerState;
 using Expedition.RecipeResolver;
+using Expedition.Scheduling;
 
 namespace Expedition.Workflow;
 
 /// <summary>
 /// The main workflow state machine. Drives the full gather-to-craft pipeline:
-///   1. Resolve recipe tree
-///   2. Check inventory
-///   3. Gather missing materials (via GatherBuddy Reborn)
-///   4. Craft sub-recipes bottom-up (via Artisan)
-///   5. Craft final item
+///
+///   1. Resolve recipe tree (with full dependency analysis)
+///   2. Validate prerequisites (master books, class levels, specialist, gear durability)
+///   3. Run pre-flight checks (inventory space, food buffs, crystal stock)
+///   4. Check inventory for existing materials
+///   5. Schedule and optimize gathering route (zone grouping, timed node priority)
+///   6. Gather missing materials via GatherBuddy Reborn
+///      - Handle timed/unspoiled node windows (wait or fill with normal nodes)
+///      - Handle ephemeral nodes for aetherial reduction sources
+///      - Monitor GP and recommend cordial usage
+///   7. Craft sub-recipes bottom-up via Artisan (auto-class switching)
+///   8. Craft final item
+///   9. Periodic health checks (durability, food buffs, inventory space)
 ///
 /// State transitions:
-///   Idle → Resolving → CheckingInventory → Gathering → Crafting → Completed
-///   Any state → Error (on failure)
+///   Idle → Resolving → Validating → CheckingInventory → PreparingGather →
+///   Gathering → PreparingCraft → Crafting → Completed
+///   Any state → Error (on failure) or Paused (on recoverable issue)
 ///   Any state → Idle (on cancel)
 /// </summary>
 public sealed class WorkflowEngine : IDisposable
@@ -26,6 +37,13 @@ public sealed class WorkflowEngine : IDisposable
     private readonly CraftingOrchestrator craftingOrchestrator;
     private readonly Configuration config;
 
+    // New subsystems
+    private readonly PrerequisiteValidator prerequisiteValidator = new();
+    private readonly DurabilityMonitor durabilityMonitor = new();
+    private readonly BuffTracker buffTracker = new();
+    private readonly GpTracker gpTracker = new();
+
+    // State
     public WorkflowState CurrentState { get; private set; } = WorkflowState.Idle;
     public WorkflowPhase CurrentPhase { get; private set; } = WorkflowPhase.None;
     public string StatusMessage { get; private set; } = string.Empty;
@@ -34,6 +52,22 @@ public sealed class WorkflowEngine : IDisposable
     public int TargetQuantity { get; private set; }
     public DateTime? StartTime { get; private set; }
     public List<string> Log { get; } = new();
+
+    // Validation results (exposed for UI)
+    public ValidationResult? LastValidation { get; private set; }
+    public DurabilityReport? LastDurabilityReport { get; private set; }
+    public BuffDiagnostic? LastBuffDiagnostic { get; private set; }
+
+    // Health check timing
+    private DateTime lastHealthCheck = DateTime.MinValue;
+    private const double HealthCheckIntervalSeconds = 30.0;
+
+    // One-shot state flags (prevent re-entering one-time states every frame)
+    private bool resolveCompleted;
+    private bool validationCompleted;
+    private bool inventoryCheckCompleted;
+    private bool gatherPrepCompleted;
+    private bool craftPrepCompleted;
 
     public event Action<WorkflowState>? OnStateChanged;
     public event Action<string>? OnStatusChanged;
@@ -69,6 +103,7 @@ public sealed class WorkflowEngine : IDisposable
         TargetQuantity = quantity;
         StartTime = DateTime.Now;
         Log.Clear();
+        ResetOneShots();
 
         AddLog($"Starting workflow: {recipe.ItemName} x{quantity}");
         TransitionTo(WorkflowState.Resolving);
@@ -89,6 +124,21 @@ public sealed class WorkflowEngine : IDisposable
     }
 
     /// <summary>
+    /// Resumes from a Paused state (e.g., after user fixes an issue).
+    /// </summary>
+    public void Resume()
+    {
+        if (CurrentState != WorkflowState.Paused) return;
+
+        AddLog("Workflow resumed by user.");
+
+        // Re-run from validation to pick up any changes the user made
+        validationCompleted = false;
+        inventoryCheckCompleted = false;
+        TransitionTo(WorkflowState.Validating);
+    }
+
+    /// <summary>
     /// Called every frame from Framework.Update.
     /// Drives the state machine forward.
     /// </summary>
@@ -97,15 +147,19 @@ public sealed class WorkflowEngine : IDisposable
         switch (CurrentState)
         {
             case WorkflowState.Resolving:
-                ExecuteResolving();
+                if (!resolveCompleted) ExecuteResolving();
+                break;
+
+            case WorkflowState.Validating:
+                if (!validationCompleted) ExecuteValidation();
                 break;
 
             case WorkflowState.CheckingInventory:
-                ExecuteCheckingInventory();
+                if (!inventoryCheckCompleted) ExecuteCheckingInventory();
                 break;
 
             case WorkflowState.PreparingGather:
-                ExecutePreparingGather();
+                if (!gatherPrepCompleted) ExecutePreparingGather();
                 break;
 
             case WorkflowState.Gathering:
@@ -113,7 +167,7 @@ public sealed class WorkflowEngine : IDisposable
                 break;
 
             case WorkflowState.PreparingCraft:
-                ExecutePreparingCraft();
+                if (!craftPrepCompleted) ExecutePreparingCraft();
                 break;
 
             case WorkflowState.Crafting:
@@ -123,7 +177,14 @@ public sealed class WorkflowEngine : IDisposable
             case WorkflowState.Completed:
             case WorkflowState.Error:
             case WorkflowState.Idle:
+            case WorkflowState.Paused:
                 break;
+        }
+
+        // Periodic health checks during long-running phases
+        if (CurrentState == WorkflowState.Gathering || CurrentState == WorkflowState.Crafting)
+        {
+            RunPeriodicHealthChecks();
         }
     }
 
@@ -138,23 +199,108 @@ public sealed class WorkflowEngine : IDisposable
         {
             ResolvedRecipe = recipeResolver.Resolve(CurrentRecipe!, TargetQuantity);
 
-            AddLog($"Recipe resolved: {ResolvedRecipe.GatherList.Count} gatherable materials, " +
-                   $"{ResolvedRecipe.CraftOrder.Count} crafting steps, " +
-                   $"{ResolvedRecipe.OtherMaterials.Count} other materials.");
+            var timedCount = ResolvedRecipe.GatherList.Count(g => g.IsTimedNode);
+            var collectableCount = ResolvedRecipe.GatherList.Count(g => g.IsCollectable);
+            var aethersandCount = ResolvedRecipe.GatherList.Count(g => g.IsAetherialReductionSource);
+            var crystalCount = ResolvedRecipe.GatherList.Count(g => g.IsCrystal);
+
+            AddLog($"Recipe resolved: {ResolvedRecipe.GatherList.Count} gatherable, " +
+                   $"{ResolvedRecipe.CraftOrder.Count} craft steps, " +
+                   $"{ResolvedRecipe.OtherMaterials.Count} other.");
+
+            if (timedCount > 0)
+                AddLog($"  Timed nodes: {timedCount} items require unspoiled/legendary nodes.");
+            if (collectableCount > 0)
+                AddLog($"  Collectables: {collectableCount} items are collectables (won't stack).");
+            if (aethersandCount > 0)
+                AddLog($"  Aethersands: {aethersandCount} items require Aetherial Reduction.");
+            if (crystalCount > 0)
+                AddLog($"  Crystals: {crystalCount} crystal/shard/cluster types needed.");
 
             if (ResolvedRecipe.OtherMaterials.Count > 0)
             {
                 foreach (var mat in ResolvedRecipe.OtherMaterials)
-                {
-                    AddLog($"  [!] {mat.ItemName} x{mat.QuantityNeeded} - Not gatherable/craftable, must be obtained manually.");
-                }
+                    AddLog($"  [!] {mat.ItemName} x{mat.QuantityNeeded} — vendor/drop/other source.");
             }
 
-            TransitionTo(WorkflowState.CheckingInventory);
+            resolveCompleted = true;
+            TransitionTo(WorkflowState.Validating);
         }
         catch (Exception ex)
         {
             HandleError($"Failed to resolve recipe: {ex.Message}");
+        }
+    }
+
+    private void ExecuteValidation()
+    {
+        CurrentPhase = WorkflowPhase.Validating;
+        SetStatus("Validating prerequisites...");
+
+        try
+        {
+            // Prerequisite validation
+            if (config.ValidatePrerequisites)
+            {
+                LastValidation = prerequisiteValidator.Validate(ResolvedRecipe!, config);
+
+                foreach (var warning in LastValidation.Warnings)
+                {
+                    var prefix = warning.Severity switch
+                    {
+                        Severity.Critical => "[CRITICAL]",
+                        Severity.Error => "[ERROR]",
+                        Severity.Warning => "[Warning]",
+                        _ => "[Info]",
+                    };
+                    AddLog($"  {prefix} [{warning.Category}] {warning.Message}");
+                }
+
+                if (LastValidation.HasCritical && config.BlockOnCriticalWarnings)
+                {
+                    AddLog("Critical prerequisite issues found. Workflow paused.");
+                    SetStatus("Paused: Critical prerequisite issues. Fix and resume.");
+                    TransitionTo(WorkflowState.Paused);
+                    validationCompleted = true;
+                    return;
+                }
+            }
+
+            // Gear durability
+            if (config.CheckDurabilityBeforeStart)
+            {
+                LastDurabilityReport = durabilityMonitor.GetReport();
+                AddLog($"  {LastDurabilityReport.StatusText}");
+
+                if (LastDurabilityReport.LowestPercent < config.DurabilityWarningPercent)
+                {
+                    var hasDarkMatter = durabilityMonitor.HasDarkMatter();
+                    AddLog($"  Dark Matter available: {(hasDarkMatter ? "Yes" : "No — purchase before continuing")}");
+
+                    if (LastDurabilityReport.LowestPercent == 0)
+                    {
+                        HandleError("Equipment is broken (0% durability). Repair before starting.");
+                        validationCompleted = true;
+                        return;
+                    }
+                }
+            }
+
+            // Food buffs
+            if (config.WarnOnMissingFood)
+            {
+                LastBuffDiagnostic = buffTracker.GetDiagnostic();
+                foreach (var warning in LastBuffDiagnostic.GetWarnings())
+                    AddLog($"  [Buff] {warning}");
+            }
+
+            AddLog("Prerequisite validation complete.");
+            validationCompleted = true;
+            TransitionTo(WorkflowState.CheckingInventory);
+        }
+        catch (Exception ex)
+        {
+            HandleError($"Validation failed: {ex.Message}");
         }
     }
 
@@ -172,33 +318,41 @@ public sealed class WorkflowEngine : IDisposable
 
             AddLog($"Inventory checked: {totalGatherItems} items need gathering ({totalGatherNeeded} total units).");
 
-            // Check for insufficient inventory space
-            var shortfall = inventoryManager.EstimateInventoryShortfall(ResolvedRecipe);
-            if (shortfall > 0)
-            {
-                AddLog($"[Warning] Estimated {shortfall} additional inventory slots needed. May need to free space.");
-            }
+            // Collectable inventory pressure
+            var collectableSlots = ResolvedRecipe.GatherList
+                .Where(g => g.IsCollectable && g.QuantityRemaining > 0)
+                .Sum(g => g.QuantityRemaining);
 
-            // Check for non-obtainable materials
+            var normalSlots = inventoryManager.EstimateInventoryShortfall(ResolvedRecipe);
+
+            if (collectableSlots > 0)
+                AddLog($"  [!] Collectables will consume ~{collectableSlots} slots (cannot stack).");
+            if (normalSlots > 0)
+                AddLog($"  [Warning] Estimated {normalSlots} additional inventory slots needed.");
+
+            // Non-obtainable materials
             var missingOther = ResolvedRecipe.OtherMaterials.Where(m => m.QuantityRemaining > 0).ToList();
             if (missingOther.Count > 0)
             {
                 var names = string.Join(", ", missingOther.Select(m => $"{m.ItemName} x{m.QuantityRemaining}"));
                 if (config.PauseOnError)
                 {
-                    HandleError($"Missing non-gatherable materials: {names}. Obtain these manually and restart.");
+                    AddLog($"[!] Missing non-gatherable materials: {names}");
+                    SetStatus($"Paused: Need {names}. Obtain manually and resume.");
+                    TransitionTo(WorkflowState.Paused);
+                    inventoryCheckCompleted = true;
                     return;
                 }
                 else
                 {
-                    AddLog($"[Warning] Missing non-gatherable materials: {names}. Proceeding anyway.");
+                    AddLog($"  [Warning] Missing non-gatherable materials: {names}. Proceeding anyway.");
                 }
             }
 
+            inventoryCheckCompleted = true;
+
             if (totalGatherNeeded > 0)
-            {
                 TransitionTo(WorkflowState.PreparingGather);
-            }
             else
             {
                 AddLog("All materials already in inventory. Skipping gathering phase.");
@@ -218,7 +372,6 @@ public sealed class WorkflowEngine : IDisposable
 
         try
         {
-            // Verify GatherBuddy Reborn is available
             if (!Expedition.Instance.Ipc.GatherBuddy.IsAvailable)
             {
                 Expedition.Instance.Ipc.GatherBuddy.CheckAvailability();
@@ -230,9 +383,23 @@ public sealed class WorkflowEngine : IDisposable
             }
 
             gatheringOrchestrator.BuildQueue(ResolvedRecipe!, config.GatherQuantityBuffer);
-            gatheringOrchestrator.Start();
 
+            if (config.OptimizeGatherRoute)
+            {
+                gatheringOrchestrator.OptimizeQueue(config.PrioritizeTimedNodes);
+                var routeDesc = ZoneRouteOptimizer.GetRouteDescription(gatheringOrchestrator.Tasks);
+                if (routeDesc.Count > 0)
+                {
+                    AddLog("Optimized gathering route:");
+                    foreach (var line in routeDesc)
+                        AddLog(line);
+                }
+            }
+
+            gatheringOrchestrator.Start();
             AddLog($"Gathering started: {gatheringOrchestrator.Tasks.Count} tasks.");
+
+            gatherPrepCompleted = true;
             TransitionTo(WorkflowState.Gathering);
         }
         catch (Exception ex)
@@ -260,14 +427,13 @@ public sealed class WorkflowEngine : IDisposable
 
                 if (config.PauseOnError)
                 {
-                    HandleError(failMsg);
+                    SetStatus($"Paused: {failMsg}. Fix and resume, or cancel.");
+                    TransitionTo(WorkflowState.Paused);
                     return;
                 }
             }
 
             AddLog("Gathering phase complete.");
-
-            // Re-check inventory after gathering
             inventoryManager.UpdateResolvedRecipe(ResolvedRecipe!);
             TransitionTo(WorkflowState.PreparingCraft);
         }
@@ -280,7 +446,6 @@ public sealed class WorkflowEngine : IDisposable
 
         try
         {
-            // Verify Artisan is available
             if (!Expedition.Instance.Ipc.Artisan.IsAvailable)
             {
                 Expedition.Instance.Ipc.Artisan.CheckAvailability();
@@ -295,7 +460,11 @@ public sealed class WorkflowEngine : IDisposable
             craftingOrchestrator.BuildQueue(ResolvedRecipe!, solver, config.CraftQuantityBuffer);
             craftingOrchestrator.Start();
 
-            AddLog($"Crafting started: {craftingOrchestrator.Tasks.Count} recipes.");
+            var classes = JobSwitchManager.GetRequiredCraftClasses(ResolvedRecipe!.CraftOrder);
+            var classNames = string.Join(", ", classes.Select(c => RecipeResolverService.GetCraftTypeName(c)));
+            AddLog($"Crafting started: {craftingOrchestrator.Tasks.Count} recipes across {classNames}.");
+
+            craftPrepCompleted = true;
             TransitionTo(WorkflowState.Crafting);
         }
         catch (Exception ex)
@@ -322,7 +491,8 @@ public sealed class WorkflowEngine : IDisposable
             }
 
             AddLog("Workflow complete!");
-            SetStatus($"Completed: {CurrentRecipe!.ItemName} x{TargetQuantity}");
+            var elapsed = StartTime.HasValue ? (DateTime.Now - StartTime.Value) : TimeSpan.Zero;
+            SetStatus($"Completed: {CurrentRecipe!.ItemName} x{TargetQuantity} in {elapsed.TotalMinutes:F1}m");
 
             if (config.NotifyOnCompletion)
             {
@@ -335,6 +505,44 @@ public sealed class WorkflowEngine : IDisposable
         }
     }
 
+    // --- Periodic Health Checks ---
+
+    private void RunPeriodicHealthChecks()
+    {
+        if ((DateTime.Now - lastHealthCheck).TotalSeconds < HealthCheckIntervalSeconds) return;
+        lastHealthCheck = DateTime.Now;
+
+        // Durability check
+        if (config.MonitorDurabilityDuringRun)
+        {
+            var report = durabilityMonitor.GetReport();
+            if (report.LowestPercent == 0)
+            {
+                AddLog("[Health] Equipment BROKEN! Pausing workflow.");
+                SetStatus("Paused: Equipment broken. Repair and resume.");
+                TransitionTo(WorkflowState.Paused);
+                return;
+            }
+
+            if (report.LowestPercent < config.DurabilityWarningPercent)
+            {
+                AddLog($"  [Health] {report.StatusText} — consider repairing.");
+                DalamudApi.ChatGui.Print($"[Expedition] {report.StatusText}");
+            }
+        }
+
+        // Food buff expiry
+        if (config.WarnOnFoodExpiring)
+        {
+            var diagnostic = buffTracker.GetDiagnostic();
+            if (diagnostic.FoodExpiringSoon)
+            {
+                AddLog($"  [Health] Food buff expiring in {diagnostic.FoodRemainingSeconds:F0}s!");
+                DalamudApi.ChatGui.Print("[Expedition] Food buff expiring soon! Re-eat food.");
+            }
+        }
+    }
+
     // --- Helpers ---
 
     private void TransitionTo(WorkflowState newState)
@@ -343,11 +551,9 @@ public sealed class WorkflowEngine : IDisposable
         CurrentState = newState;
 
         if (newState == WorkflowState.Idle || newState == WorkflowState.Completed)
-        {
             CurrentPhase = WorkflowPhase.None;
-        }
 
-        DalamudApi.Log.Information($"Workflow: {oldState} → {newState}");
+        DalamudApi.Log.Information($"Workflow: {oldState} -> {newState}");
         OnStateChanged?.Invoke(newState);
     }
 
@@ -368,11 +574,20 @@ public sealed class WorkflowEngine : IDisposable
         OnError?.Invoke(message);
     }
 
-    private void AddLog(string message)
+    public void AddLog(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss");
         Log.Add($"[{timestamp}] {message}");
         DalamudApi.Log.Information($"[Workflow] {message}");
+    }
+
+    private void ResetOneShots()
+    {
+        resolveCompleted = false;
+        validationCompleted = false;
+        inventoryCheckCompleted = false;
+        gatherPrepCompleted = false;
+        craftPrepCompleted = false;
     }
 
     public void Dispose()
@@ -388,12 +603,14 @@ public enum WorkflowState
 {
     Idle,
     Resolving,
+    Validating,
     CheckingInventory,
     PreparingGather,
     Gathering,
     PreparingCraft,
     Crafting,
     Completed,
+    Paused,
     Error,
 }
 
@@ -404,6 +621,7 @@ public enum WorkflowPhase
 {
     None,
     Resolving,
+    Validating,
     CheckingInventory,
     Gathering,
     Crafting,

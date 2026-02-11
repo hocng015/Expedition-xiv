@@ -209,7 +209,10 @@ public sealed class MainWindow
         ImGui.Text($"Class: {RecipeResolverService.GetCraftTypeName(recipe.CraftTypeId)}  |  Level: {recipe.RequiredLevel}");
 
         if (recipe.IsCollectable) ImGui.TextColored(new Vector4(0.4f, 0.8f, 1f, 1f), "Collectable");
-        if (recipe.IsExpert) ImGui.TextColored(new Vector4(1f, 0.5f, 0.5f, 1f), "Expert Recipe");
+        if (recipe.IsExpert) ImGui.TextColored(new Vector4(1f, 0.5f, 0.5f, 1f), "Expert Recipe (RNG conditions!)");
+        if (recipe.RequiresSpecialist) ImGui.TextColored(new Vector4(1f, 0.6f, 0.8f, 1f), "Specialist Required");
+        if (recipe.RequiresMasterBook) ImGui.TextColored(new Vector4(1f, 0.8f, 0.4f, 1f), "Master Recipe Book Required");
+        if (recipe.RecipeDurability > 0) ImGui.Text($"Durability: {recipe.RecipeDurability}  |  Suggested: {recipe.SuggestedCraftsmanship}C/{recipe.SuggestedControl}Ctrl");
 
         ImGui.Separator();
         ImGui.Text("Direct Ingredients:");
@@ -290,25 +293,51 @@ public sealed class MainWindow
     {
         var engine = plugin.WorkflowEngine;
 
+        // Eorzean time
+        if (Expedition.Config.ShowEorzeanTime)
+        {
+            ImGui.TextColored(new Vector4(0.6f, 0.8f, 1f, 1f), Scheduling.EorzeanTime.FormatCurrentTime());
+            ImGui.SameLine();
+        }
+
         // Status header
         var stateColor = engine.CurrentState switch
         {
             WorkflowState.Idle => new Vector4(0.5f, 0.5f, 0.5f, 1f),
             WorkflowState.Completed => new Vector4(0.3f, 1f, 0.3f, 1f),
             WorkflowState.Error => new Vector4(1f, 0.3f, 0.3f, 1f),
+            WorkflowState.Paused => new Vector4(1f, 0.7f, 0.2f, 1f),
             _ => new Vector4(1f, 0.9f, 0.4f, 1f),
         };
 
         ImGui.TextColored(stateColor, $"State: {engine.CurrentState}");
         if (engine.CurrentPhase != WorkflowPhase.None)
+        {
             ImGui.SameLine();
             ImGui.Text($"  Phase: {engine.CurrentPhase}");
+        }
 
         if (engine.CurrentRecipe != null)
             ImGui.Text($"Target: {engine.CurrentRecipe.ItemName} x{engine.TargetQuantity}");
 
         if (!string.IsNullOrEmpty(engine.StatusMessage))
             ImGui.TextWrapped(engine.StatusMessage);
+
+        // Health indicators
+        if (engine.LastDurabilityReport != null)
+        {
+            var durColor = engine.LastDurabilityReport.LowestPercent switch
+            {
+                0 => new Vector4(1f, 0f, 0f, 1f),
+                < 20 => new Vector4(1f, 0.3f, 0.3f, 1f),
+                < 50 => new Vector4(1f, 0.9f, 0.4f, 1f),
+                _ => new Vector4(0.3f, 1f, 0.3f, 1f),
+            };
+            ImGui.TextColored(durColor, engine.LastDurabilityReport.StatusText);
+        }
+
+        if (engine.LastBuffDiagnostic != null)
+            ImGui.Text(engine.LastBuffDiagnostic.FoodStatusText);
 
         ImGui.Separator();
 
@@ -328,10 +357,30 @@ public sealed class MainWindow
 
         ImGui.Separator();
 
+        // Validation warnings
+        if (engine.LastValidation != null && engine.LastValidation.HasWarnings)
+        {
+            if (ImGui.CollapsingHeader("Validation Warnings"))
+            {
+                foreach (var w in engine.LastValidation.Warnings)
+                {
+                    var wColor = w.Severity switch
+                    {
+                        PlayerState.Severity.Critical => new Vector4(1f, 0f, 0f, 1f),
+                        PlayerState.Severity.Error => new Vector4(1f, 0.3f, 0.3f, 1f),
+                        PlayerState.Severity.Warning => new Vector4(1f, 0.9f, 0.4f, 1f),
+                        _ => new Vector4(0.7f, 0.7f, 0.7f, 1f),
+                    };
+                    ImGui.TextColored(wColor, $"[{w.Category}] {w.Message}");
+                }
+            }
+        }
+
         // Controls
         var isRunning = engine.CurrentState != WorkflowState.Idle &&
                         engine.CurrentState != WorkflowState.Completed &&
-                        engine.CurrentState != WorkflowState.Error;
+                        engine.CurrentState != WorkflowState.Error &&
+                        engine.CurrentState != WorkflowState.Paused;
 
         if (isRunning)
         {
@@ -339,11 +388,20 @@ public sealed class MainWindow
                 engine.Cancel();
         }
 
+        if (engine.CurrentState == WorkflowState.Paused)
+        {
+            if (ImGui.Button("Resume", new Vector2(100, 30)))
+                engine.Resume();
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel", new Vector2(100, 30)))
+                engine.Cancel();
+        }
+
         if (engine.CurrentState == WorkflowState.Error)
         {
             ImGui.SameLine();
             if (ImGui.Button("Reset", new Vector2(80, 30)))
-                engine.Cancel(); // Returns to idle
+                engine.Cancel();
         }
     }
 

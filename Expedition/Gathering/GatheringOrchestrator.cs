@@ -1,5 +1,6 @@
 using Expedition.IPC;
 using Expedition.RecipeResolver;
+using Expedition.Scheduling;
 
 namespace Expedition.Gathering;
 
@@ -47,6 +48,29 @@ public sealed class GatheringOrchestrator
 
         State = taskQueue.Count > 0 ? GatheringOrchestratorState.Ready : GatheringOrchestratorState.Idle;
         StatusMessage = $"Gathering queue: {taskQueue.Count} items to gather.";
+        DalamudApi.Log.Information(StatusMessage);
+    }
+
+    /// <summary>
+    /// Optimizes the task queue for zone efficiency and timed node scheduling.
+    /// </summary>
+    public void OptimizeQueue(bool prioritizeTimedNodes)
+    {
+        if (taskQueue.Count <= 1) return;
+
+        var optimized = ZoneRouteOptimizer.OptimizeRoute(taskQueue);
+
+        if (prioritizeTimedNodes)
+        {
+            // Further sort: active timed nodes go to the front
+            var scheduled = NodeScheduler.BuildScheduledQueue(optimized);
+            optimized = scheduled.Select(s => s.Task).ToList();
+        }
+
+        taskQueue.Clear();
+        taskQueue.AddRange(optimized);
+
+        StatusMessage = $"Gathering queue optimized: {taskQueue.Count} tasks.";
         DalamudApi.Log.Information(StatusMessage);
     }
 
@@ -134,7 +158,23 @@ public sealed class GatheringOrchestrator
             }
         }
 
-        StatusMessage = $"Gathering {task.ItemName}: {task.QuantityGathered}/{task.QuantityNeeded}";
+        // Add timed node context to status
+        if (task.IsTimedNode && task.SpawnHours != null)
+        {
+            var isActive = task.SpawnHours.Any(h => EorzeanTime.IsWithinWindow(h, 2));
+            if (isActive)
+                StatusMessage = $"Gathering {task.ItemName}: {task.QuantityGathered}/{task.QuantityNeeded} (timed node ACTIVE)";
+            else
+            {
+                var nextSpawn = task.SpawnHours.Min(h => EorzeanTime.SecondsUntilEorzeanHour(h));
+                StatusMessage = $"Gathering {task.ItemName}: {task.QuantityGathered}/{task.QuantityNeeded} " +
+                                $"(timed node spawns in {EorzeanTime.FormatRealDuration(nextSpawn)})";
+            }
+        }
+        else
+        {
+            StatusMessage = $"Gathering {task.ItemName}: {task.QuantityGathered}/{task.QuantityNeeded}";
+        }
     }
 
     /// <summary>
