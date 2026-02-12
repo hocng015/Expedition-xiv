@@ -40,7 +40,7 @@ public sealed class WorkflowEngine : IDisposable
     // New subsystems
     private readonly PrerequisiteValidator prerequisiteValidator = new();
     private readonly DurabilityMonitor durabilityMonitor = new();
-    private readonly BuffTracker buffTracker = new();
+    public BuffTracker BuffTracker { get; } = new();
     private readonly GpTracker gpTracker = new();
 
     // State
@@ -289,7 +289,7 @@ public sealed class WorkflowEngine : IDisposable
             // Food buffs
             if (config.WarnOnMissingFood)
             {
-                LastBuffDiagnostic = buffTracker.GetDiagnostic();
+                LastBuffDiagnostic = BuffTracker.GetDiagnostic();
                 foreach (var warning in LastBuffDiagnostic.GetWarnings())
                     AddLog($"  [Buff] {warning}");
             }
@@ -534,7 +534,7 @@ public sealed class WorkflowEngine : IDisposable
         // Food buff expiry
         if (config.WarnOnFoodExpiring)
         {
-            var diagnostic = buffTracker.GetDiagnostic();
+            var diagnostic = BuffTracker.GetDiagnostic();
             if (diagnostic.FoodExpiringSoon)
             {
                 AddLog($"  [Health] Food buff expiring in {diagnostic.FoodRemainingSeconds:F0}s!");

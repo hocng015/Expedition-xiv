@@ -1,5 +1,3 @@
-using FFXIVClientStructs.FFXIV.Client.Game;
-
 namespace Expedition.PlayerState;
 
 /// <summary>
@@ -41,16 +39,16 @@ public sealed class JobSwitchManager
     /// Returns the ClassJob ID for a CraftType index.
     /// </summary>
     public static uint CraftTypeToJobId(int craftTypeId)
-        => CraftTypeToClassJob.GetValueOrDefault((int)craftTypeId, 0);
+        => CraftTypeToClassJob.GetValueOrDefault(craftTypeId, 0u);
 
     /// <summary>
     /// Gets the current player ClassJob ID.
     /// </summary>
-    public static unsafe uint GetCurrentJobId()
+    public static uint GetCurrentJobId()
     {
-        var player = FFXIVClientStructs.FFXIV.Client.Game.Character.CharacterManager.Instance()->LocalPlayer;
+        var player = DalamudApi.ClientState.LocalPlayer;
         if (player == null) return 0;
-        return player->ClassJob;
+        return player.ClassJob.RowId;
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using System.Numerics;
-using ImGuiNET;
+using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Textures;
 
 using Expedition.Crafting;
 using Expedition.Gathering;
@@ -24,6 +25,33 @@ public sealed class MainWindow
     private bool showSettings;
     private string logFilter = string.Empty;
 
+    // Browse tab state
+    private bool browseIsDol; // false = DOH crafting, true = DOL gathering
+    private int? browseSelectedClass; // DOH: CraftType index (0-7), DOL: unused (use browseSelectedGatherType)
+    private GatherType? browseSelectedGatherType; // DOL: Miner/Botanist/Fisher
+    private int browseMinLevel = 1;
+    private int browseMaxLevel = 100;
+    private bool browseCollectableOnly;
+    private bool browseExpertOnly;
+    private bool browseSpecialistOnly;
+    private bool browseMasterBookOnly;
+    private bool browseHideCrystals = true;
+    private List<RecipeNode> browseResults = new();
+    private List<GatherableItemInfo> browseGatherResults = new();
+    private GatherableItemInfo? selectedGatherItem;
+    private bool browseNeedsRefresh = true;
+    private bool resetTabToBrowse;
+
+    // CraftType index -> ClassJob RowId (for job icon lookup: icon = 62100 + classJobId)
+    private static readonly uint[] CraftTypeToClassJobId = { 8, 9, 10, 11, 12, 13, 14, 15 };
+    // DOL ClassJob RowIds: MIN=16, BTN=17, FSH=18
+    private static readonly (string Name, uint ClassJobId, GatherType Type)[] GatherClasses =
+    {
+        ("MIN", 16, GatherType.Miner),
+        ("BTN", 17, GatherType.Botanist),
+        ("FSH", 18, GatherType.Fisher),
+    };
+
     public bool IsOpen;
 
     public MainWindow(Expedition plugin)
@@ -31,7 +59,11 @@ public sealed class MainWindow
         this.plugin = plugin;
     }
 
-    public void Toggle() => IsOpen = !IsOpen;
+    public void Toggle()
+    {
+        IsOpen = !IsOpen;
+        if (IsOpen) resetTabToBrowse = true;
+    }
 
     public void OpenSettings()
     {
@@ -56,6 +88,7 @@ public sealed class MainWindow
         ImGui.PopStyleVar();
 
         DrawMenuBar();
+        DrawHeaderBar();
 
         if (showSettings)
         {
@@ -67,6 +100,14 @@ public sealed class MainWindow
         ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(6, 4));
         if (ImGui.BeginTabBar("ExpeditionTabs"))
         {
+            var browseFlags = resetTabToBrowse ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+            if (resetTabToBrowse) resetTabToBrowse = false;
+            if (ImGui.BeginTabItem("Browse", browseFlags))
+            {
+                DrawBrowseTab();
+                ImGui.EndTabItem();
+            }
+
             if (ImGui.BeginTabItem("Recipe"))
             {
                 DrawRecipeTab();
@@ -109,11 +150,11 @@ public sealed class MainWindow
         var (gbr, artisan) = plugin.Ipc.GetAvailability();
 
         // GBR status
-        Theme.StatusDot(gbr ? Theme.Success : Theme.Error, gbr ? "GBR" : "GBR");
+        Theme.StatusDot(gbr ? Theme.Success : Theme.Error, "GBR");
         ImGui.SameLine(0, Theme.PadLarge);
 
         // Artisan status
-        Theme.StatusDot(artisan ? Theme.Success : Theme.Error, artisan ? "Artisan" : "Artisan");
+        Theme.StatusDot(artisan ? Theme.Success : Theme.Error, "Artisan");
 
         if (!gbr || !artisan)
         {
@@ -122,16 +163,593 @@ public sealed class MainWindow
                 plugin.Ipc.RefreshAvailability();
         }
 
-        // Eorzean time on the right side
+        ImGui.EndMenuBar();
+    }
+
+    // ──────────────────────────────────────────────
+    // Header Bar (ET time, countdown, buffs)
+    // ──────────────────────────────────────────────
+
+    private void DrawHeaderBar()
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var windowWidth = ImGui.GetContentRegionAvail().X;
+        var barHeight = 26f;
+        var barStart = ImGui.GetCursorScreenPos();
+        var cursorStart = ImGui.GetCursorPos();
+
+        // Dark background strip
+        drawList.AddRectFilled(
+            barStart,
+            new Vector2(barStart.X + windowWidth, barStart.Y + barHeight),
+            ImGui.ColorConvertFloat4ToU32(new Vector4(0.08f, 0.08f, 0.10f, 1.00f)));
+
+        var textY = barStart.Y + (barHeight - ImGui.GetTextLineHeight()) / 2;
+
+        // ── Left: Eorzean Time box ──
         if (Expedition.Config.ShowEorzeanTime)
         {
-            var timeText = EorzeanTime.FormatCurrentTime();
-            var timeWidth = ImGui.CalcTextSize(timeText).X;
-            ImGui.SameLine(ImGui.GetWindowWidth() - timeWidth - 24);
-            ImGui.TextColored(Theme.TimedNode, timeText);
+            var etText = $"ET {EorzeanTime.CurrentHour:D2}:{EorzeanTime.CurrentMinute:D2}";
+            var etSize = ImGui.CalcTextSize(etText);
+            var etBoxPad = 6f;
+            var etBoxStart = new Vector2(barStart.X + 4, barStart.Y + 3);
+            var etBoxEnd = new Vector2(etBoxStart.X + etSize.X + etBoxPad * 2, barStart.Y + barHeight - 3);
+
+            // ET background box (greenish tint like GBR)
+            drawList.AddRectFilled(etBoxStart, etBoxEnd,
+                ImGui.ColorConvertFloat4ToU32(new Vector4(0.15f, 0.35f, 0.15f, 1.00f)), 3f);
+            drawList.AddRect(etBoxStart, etBoxEnd,
+                ImGui.ColorConvertFloat4ToU32(new Vector4(0.30f, 0.60f, 0.30f, 0.50f)), 3f);
+
+            drawList.AddText(new Vector2(etBoxStart.X + etBoxPad, textY),
+                ImGui.ColorConvertFloat4ToU32(Theme.Success), etText);
+
+            // ── Center: Time to next ET hour ──
+            var secondsToNext = EorzeanTime.SecondsUntilEorzeanHour((EorzeanTime.CurrentHour + 1) % 24);
+            var minutesToNext = secondsToNext / 60.0;
+            var countdownText = $"{minutesToNext:00}:{(secondsToNext % 60):00} Min to next hour.";
+            var countdownSize = ImGui.CalcTextSize(countdownText);
+            var countdownX = barStart.X + (windowWidth - countdownSize.X) / 2;
+
+            drawList.AddText(new Vector2(countdownX, textY),
+                ImGui.ColorConvertFloat4ToU32(Theme.TextSecondary), countdownText);
         }
 
-        ImGui.EndMenuBar();
+        // ── Right: Food buff status ──
+        var player = DalamudApi.ClientState.LocalPlayer;
+        if (player != null)
+        {
+            var buffTracker = plugin.WorkflowEngine.BuffTracker;
+            var foodRemaining = buffTracker.GetFoodBuffRemainingSeconds();
+
+            if (foodRemaining > 0)
+            {
+                var foodMin = foodRemaining / 60f;
+                var foodText = $"{foodMin:F1} Min.";
+                var foodSize = ImGui.CalcTextSize(foodText);
+
+                var foodBoxPad = 6f;
+                var foodBoxEnd = new Vector2(barStart.X + windowWidth - 4, barStart.Y + barHeight - 3);
+                var foodBoxStart = new Vector2(foodBoxEnd.X - foodSize.X - foodBoxPad * 2, barStart.Y + 3);
+
+                // Color: teal/cyan for active food
+                var foodColor = foodRemaining < 120
+                    ? new Vector4(0.40f, 0.35f, 0.10f, 1.00f)  // Amber when expiring
+                    : new Vector4(0.10f, 0.30f, 0.35f, 1.00f);  // Teal normally
+
+                var foodBorderColor = foodRemaining < 120
+                    ? new Vector4(0.70f, 0.60f, 0.20f, 0.50f)
+                    : new Vector4(0.20f, 0.60f, 0.70f, 0.50f);
+
+                drawList.AddRectFilled(foodBoxStart, foodBoxEnd,
+                    ImGui.ColorConvertFloat4ToU32(foodColor), 3f);
+                drawList.AddRect(foodBoxStart, foodBoxEnd,
+                    ImGui.ColorConvertFloat4ToU32(foodBorderColor), 3f);
+
+                var foodTextColor = foodRemaining < 120 ? Theme.Warning : Theme.Collectable;
+                drawList.AddText(new Vector2(foodBoxStart.X + foodBoxPad, textY),
+                    ImGui.ColorConvertFloat4ToU32(foodTextColor), foodText);
+
+                // Food dot indicator before the box
+                var dotRadius = 4f;
+                var dotCenter = new Vector2(foodBoxStart.X - dotRadius - 6, barStart.Y + barHeight / 2);
+                drawList.AddCircleFilled(dotCenter, dotRadius,
+                    ImGui.ColorConvertFloat4ToU32(foodRemaining < 120 ? Theme.Warning : Theme.Success));
+            }
+            else
+            {
+                // No food buff - show muted indicator
+                var noFoodText = "No Food";
+                var noFoodSize = ImGui.CalcTextSize(noFoodText);
+                drawList.AddText(
+                    new Vector2(barStart.X + windowWidth - noFoodSize.X - 8, textY),
+                    ImGui.ColorConvertFloat4ToU32(Theme.TextMuted), noFoodText);
+            }
+        }
+
+        // Advance cursor past the header bar
+        ImGui.SetCursorPos(new Vector2(cursorStart.X, cursorStart.Y + barHeight + 4));
+    }
+
+    // ──────────────────────────────────────────────
+    // Icon Helpers
+    // ──────────────────────────────────────────────
+
+    private static void DrawGameIcon(uint iconId, Vector2 size)
+    {
+        if (iconId == 0) return;
+        var wrap = DalamudApi.TextureProvider
+            .GetFromGameIcon(new GameIconLookup(iconId))
+            .GetWrapOrDefault();
+        if (wrap != null)
+            ImGui.Image(wrap.Handle, size);
+        else
+            ImGui.Dummy(size);
+    }
+
+    private static void DrawJobIcon(int craftTypeId, Vector2 size)
+    {
+        if (craftTypeId < 0 || craftTypeId >= CraftTypeToClassJobId.Length) return;
+        DrawGameIcon(62100 + CraftTypeToClassJobId[craftTypeId], size);
+    }
+
+    // ──────────────────────────────────────────────
+    // Browse Tab
+    // ──────────────────────────────────────────────
+
+    private void DrawBrowseTab()
+    {
+        ImGui.Spacing();
+
+        var avail = ImGui.GetContentRegionAvail();
+        var bottomBarHeight = 48f;
+        var contentHeight = avail.Y - bottomBarHeight;
+
+        // Left panel: Filters
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
+        ImGui.BeginChild("BrowseFilters", new Vector2(220, contentHeight), true);
+        ImGui.PopStyleColor();
+        DrawBrowseFilters();
+        ImGui.EndChild();
+
+        ImGui.SameLine();
+
+        // Middle panel: Results list
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
+        ImGui.BeginChild("BrowseResults", new Vector2(avail.X * 0.35f, contentHeight), true);
+        ImGui.PopStyleColor();
+        DrawBrowseResults();
+        ImGui.EndChild();
+
+        ImGui.SameLine();
+
+        // Right panel: Recipe details
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
+        ImGui.BeginChild("BrowseDetails", new Vector2(0, contentHeight), true);
+        ImGui.PopStyleColor();
+        {
+            if (selectedRecipe != null)
+                DrawRecipeDetails();
+            else if (selectedGatherItem != null)
+                DrawGatherItemDetails();
+            else
+            {
+                var center = ImGui.GetContentRegionAvail();
+                ImGui.SetCursorPos(new Vector2(Theme.PadLarge, center.Y / 2 - 20));
+                ImGui.TextColored(Theme.TextMuted, "Select an item to view details");
+                ImGui.SetCursorPosX(Theme.PadLarge);
+                ImGui.TextColored(Theme.TextMuted, "and start a workflow.");
+            }
+        }
+        ImGui.EndChild();
+
+        // Bottom action bar
+        ImGui.Spacing();
+        DrawRecipeActionBar();
+    }
+
+    private void DrawBrowseFilters()
+    {
+        // Shared icon layout
+        var columns = 4;
+        var buttonPad = Theme.PadSmall;
+        var framePad = ImGui.GetStyle().FramePadding;
+        var regionWidth = ImGui.GetContentRegionAvail().X;
+        var btnSide = (regionWidth - (columns - 1) * buttonPad) / columns;
+        var iconSide = btnSide - framePad.X * 2;
+        if (iconSide < 16) iconSide = 16;
+        var iconSize = new Vector2(iconSide, iconSide);
+        var selectedColor = new Vector4(0.25f, 0.50f, 0.85f, 1.00f);
+
+        // ── DOH Section ──
+        Theme.SectionHeader("Crafting");
+        ImGui.Spacing();
+
+        var classNames = new[] { "CRP", "BSM", "ARM", "GSM", "LTW", "WVR", "ALC", "CUL" };
+
+        // "All" button inline as first item, then DOH class icons
+        var isAllDoh = !browseIsDol && !browseSelectedClass.HasValue;
+        if (isAllDoh)
+            ImGui.PushStyleColor(ImGuiCol.Button, selectedColor);
+        ImGui.PushID("dohAll");
+        if (ImGui.Button("All", new Vector2(btnSide, btnSide)))
+        {
+            browseIsDol = false;
+            browseSelectedClass = null;
+            browseSelectedGatherType = null;
+            browseNeedsRefresh = true;
+        }
+        ImGui.PopID();
+        if (isAllDoh) ImGui.PopStyleColor();
+        ImGui.SameLine(0, buttonPad);
+
+        // DOH class icon buttons continuing from the "All" button
+        for (var i = 0; i < classNames.Length; i++)
+        {
+            var isSelected = !browseIsDol && browseSelectedClass == i;
+            var classJobId = CraftTypeToClassJobId[i];
+            var jobIconId = 62100 + classJobId;
+
+            if (isSelected)
+                ImGui.PushStyleColor(ImGuiCol.Button, selectedColor);
+
+            var wrap = DalamudApi.TextureProvider
+                .GetFromGameIcon(new GameIconLookup(jobIconId))
+                .GetWrapOrDefault();
+
+            var clicked = false;
+            ImGui.PushID($"doh{i}");
+            if (wrap != null)
+                clicked = ImGui.ImageButton(wrap.Handle, iconSize);
+            else
+                clicked = ImGui.Button(classNames[i], new Vector2(iconSize.X + 8, iconSize.Y + 8));
+            ImGui.PopID();
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.BeginTooltip();
+                ImGui.Text(classNames[i]);
+                ImGui.EndTooltip();
+            }
+
+            if (clicked)
+            {
+                browseIsDol = false;
+                browseSelectedClass = i;
+                browseSelectedGatherType = null;
+                browseNeedsRefresh = true;
+            }
+
+            if (isSelected) ImGui.PopStyleColor();
+
+            // +1 because "All" button is slot 0
+            if ((i + 2) % columns != 0 && i < classNames.Length - 1)
+                ImGui.SameLine(0, buttonPad);
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // ── DOL Section ──
+        Theme.SectionHeader("Gathering");
+        ImGui.Spacing();
+
+        // "All" button inline as first item, then DOL class icons
+        var isAllDol = browseIsDol && !browseSelectedGatherType.HasValue;
+        if (isAllDol)
+            ImGui.PushStyleColor(ImGuiCol.Button, selectedColor);
+        ImGui.PushID("dolAll");
+        if (ImGui.Button("All", new Vector2(btnSide, btnSide)))
+        {
+            browseIsDol = true;
+            browseSelectedClass = null;
+            browseSelectedGatherType = null;
+            browseNeedsRefresh = true;
+        }
+        ImGui.PopID();
+        if (isAllDol) ImGui.PopStyleColor();
+        ImGui.SameLine(0, buttonPad);
+
+        // DOL class icon buttons continuing from the "All" button
+        for (var i = 0; i < GatherClasses.Length; i++)
+        {
+            var gc = GatherClasses[i];
+            var isSelected = browseIsDol && browseSelectedGatherType == gc.Type;
+            var jobIconId = 62100 + gc.ClassJobId;
+
+            if (isSelected)
+                ImGui.PushStyleColor(ImGuiCol.Button, selectedColor);
+
+            var wrap = DalamudApi.TextureProvider
+                .GetFromGameIcon(new GameIconLookup(jobIconId))
+                .GetWrapOrDefault();
+
+            var clicked = false;
+            ImGui.PushID($"dol{i}");
+            if (wrap != null)
+                clicked = ImGui.ImageButton(wrap.Handle, iconSize);
+            else
+                clicked = ImGui.Button(gc.Name, new Vector2(iconSize.X + 8, iconSize.Y + 8));
+            ImGui.PopID();
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.BeginTooltip();
+                ImGui.Text(gc.Name);
+                ImGui.EndTooltip();
+            }
+
+            if (clicked)
+            {
+                browseIsDol = true;
+                browseSelectedClass = null;
+                browseSelectedGatherType = gc.Type;
+                browseNeedsRefresh = true;
+            }
+
+            if (isSelected) ImGui.PopStyleColor();
+
+            if (i < GatherClasses.Length - 1)
+                ImGui.SameLine(0, buttonPad);
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // Level range
+        Theme.SectionHeader("Level Range");
+        ImGui.Spacing();
+
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.SliderInt("##BrowseMinLvl", ref browseMinLevel, 1, 100, "Min: %d"))
+        {
+            browseMinLevel = Math.Clamp(browseMinLevel, 1, browseMaxLevel);
+            browseNeedsRefresh = true;
+        }
+
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.SliderInt("##BrowseMaxLvl", ref browseMaxLevel, 1, 100, "Max: %d"))
+        {
+            browseMaxLevel = Math.Clamp(browseMaxLevel, browseMinLevel, 100);
+            browseNeedsRefresh = true;
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // Toggle filters (context-sensitive)
+        Theme.SectionHeader("Filters");
+        ImGui.Spacing();
+
+        if (ImGui.Checkbox("Collectable", ref browseCollectableOnly))
+            browseNeedsRefresh = true;
+
+        if (!browseIsDol)
+        {
+            // DOH-only filters
+            if (ImGui.Checkbox("Expert", ref browseExpertOnly))
+                browseNeedsRefresh = true;
+
+            if (ImGui.Checkbox("Specialist", ref browseSpecialistOnly))
+                browseNeedsRefresh = true;
+
+            if (ImGui.Checkbox("Master Book", ref browseMasterBookOnly))
+                browseNeedsRefresh = true;
+        }
+        else
+        {
+            // DOL-only filters
+            if (ImGui.Checkbox("Hide Crystals", ref browseHideCrystals))
+                browseNeedsRefresh = true;
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        var count = browseIsDol ? browseGatherResults.Count : browseResults.Count;
+        var label = browseIsDol ? "items" : "recipes";
+        ImGui.TextColored(Theme.TextSecondary, $"{count} {label}");
+    }
+
+    private void DrawBrowseResults()
+    {
+        if (browseNeedsRefresh)
+        {
+            DoBrowse();
+            browseNeedsRefresh = false;
+        }
+
+        if (browseIsDol)
+            DrawBrowseGatherResults();
+        else
+            DrawBrowseCraftResults();
+    }
+
+    private void DrawBrowseCraftResults()
+    {
+        if (browseResults.Count == 0)
+        {
+            ImGui.Spacing();
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+            ImGui.TextColored(Theme.TextMuted, "No recipes match filters.");
+            return;
+        }
+
+        ImGui.TextColored(Theme.TextSecondary, $"  {browseResults.Count} recipes");
+        ImGui.Separator();
+
+        var iconSm = new Vector2(28, 28);
+        var jobIconSm = new Vector2(20, 20);
+
+        foreach (var recipe in browseResults)
+        {
+            var isSelected = selectedRecipe?.RecipeId == recipe.RecipeId;
+
+            DrawGameIcon(recipe.IconId, iconSm);
+            ImGui.SameLine(0, Theme.PadSmall);
+
+            var cursorY = ImGui.GetCursorPosY();
+            ImGui.SetCursorPosY(cursorY + (iconSm.Y - ImGui.GetTextLineHeight()) / 2);
+
+            var label = $"{recipe.ItemName}##browse{recipe.RecipeId}";
+            if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 50, 0)))
+            {
+                selectedRecipe = recipe;
+                selectedGatherItem = null;
+                PreviewResolve();
+            }
+
+            ImGui.SameLine(ImGui.GetContentRegionAvail().X - 40);
+            DrawJobIcon(recipe.CraftTypeId, jobIconSm);
+            ImGui.SameLine(0, 2);
+            ImGui.TextColored(Theme.TextMuted, $"{recipe.RequiredLevel}");
+
+            if (ImGui.IsItemHovered() && (recipe.IsCollectable || recipe.IsExpert || recipe.RequiresSpecialist))
+            {
+                ImGui.BeginTooltip();
+                if (recipe.IsCollectable) ImGui.TextColored(Theme.Collectable, "Collectable");
+                if (recipe.IsExpert) ImGui.TextColored(Theme.Expert, "Expert Recipe");
+                if (recipe.RequiresSpecialist) ImGui.TextColored(Theme.Specialist, "Specialist Required");
+                ImGui.EndTooltip();
+            }
+        }
+    }
+
+    private void DrawBrowseGatherResults()
+    {
+        if (browseGatherResults.Count == 0)
+        {
+            ImGui.Spacing();
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+            ImGui.TextColored(Theme.TextMuted, "No gatherable items match filters.");
+            return;
+        }
+
+        ImGui.TextColored(Theme.TextSecondary, $"  {browseGatherResults.Count} items");
+        ImGui.Separator();
+
+        var iconSm = new Vector2(28, 28);
+        var jobIconSm = new Vector2(20, 20);
+
+        foreach (var item in browseGatherResults)
+        {
+            var isSelected = selectedGatherItem?.ItemId == item.ItemId;
+
+            DrawGameIcon(item.IconId, iconSm);
+            ImGui.SameLine(0, Theme.PadSmall);
+
+            var cursorY = ImGui.GetCursorPosY();
+            ImGui.SetCursorPosY(cursorY + (iconSm.Y - ImGui.GetTextLineHeight()) / 2);
+
+            var label = $"{item.ItemName}##gather{item.ItemId}";
+            if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 50, 0)))
+            {
+                selectedGatherItem = item;
+                selectedRecipe = null;
+            }
+
+            // Gather class icon + level on the right
+            ImGui.SameLine(ImGui.GetContentRegionAvail().X - 40);
+            var gatherClassJobId = item.GatherClass switch
+            {
+                GatherType.Miner => 16u,
+                GatherType.Botanist => 17u,
+                GatherType.Fisher => 18u,
+                _ => 0u,
+            };
+            if (gatherClassJobId > 0)
+                DrawGameIcon(62100 + gatherClassJobId, jobIconSm);
+            ImGui.SameLine(0, 2);
+            ImGui.TextColored(Theme.TextMuted, $"{item.GatherLevel}");
+
+            if (ImGui.IsItemHovered() && (item.IsCollectable || item.IsAlsoCraftable))
+            {
+                ImGui.BeginTooltip();
+                if (item.IsCollectable) ImGui.TextColored(Theme.Collectable, "Collectable");
+                if (item.IsAlsoCraftable) ImGui.TextColored(Theme.Gold, "Also Craftable");
+                ImGui.EndTooltip();
+            }
+        }
+    }
+
+    private void DoBrowse()
+    {
+        if (browseIsDol)
+        {
+            browseGatherResults = plugin.RecipeResolver.BrowseGatherItems(
+                gatherClass: browseSelectedGatherType,
+                minLevel: browseMinLevel,
+                maxLevel: browseMaxLevel,
+                collectableOnly: browseCollectableOnly,
+                hideCrystals: browseHideCrystals);
+            browseResults.Clear();
+        }
+        else
+        {
+            browseResults = plugin.RecipeResolver.BrowseRecipes(
+                craftTypeId: browseSelectedClass,
+                minLevel: browseMinLevel,
+                maxLevel: browseMaxLevel,
+                collectableOnly: browseCollectableOnly,
+                expertOnly: browseExpertOnly,
+                specialistOnly: browseSpecialistOnly,
+                masterBookOnly: browseMasterBookOnly);
+            browseGatherResults.Clear();
+        }
+    }
+
+    private void DrawGatherItemDetails()
+    {
+        var item = selectedGatherItem!;
+
+        // Title with item icon
+        ImGui.Spacing();
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+        DrawGameIcon(item.IconId, new Vector2(40, 40));
+        ImGui.SameLine(0, Theme.Pad);
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (40 - ImGui.GetTextLineHeight()) / 2);
+        ImGui.TextColored(Theme.Gold, item.ItemName);
+
+        // Tags row
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+        if (item.IsCollectable)
+            Theme.InlineBadge("Collectable", Theme.Collectable);
+        if (item.IsCrystal)
+            Theme.InlineBadge("Crystal", Theme.TextSecondary);
+        if (item.IsAlsoCraftable)
+            Theme.InlineBadge("Also Craftable", Theme.Gold);
+        if (item.IsCollectable || item.IsCrystal || item.IsAlsoCraftable)
+            ImGui.NewLine();
+
+        ImGui.Spacing();
+
+        // Stats
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+        ImGui.TextColored(Theme.TextSecondary, "Class:");
+        ImGui.SameLine();
+        var gatherClassJobId = item.GatherClass switch
+        {
+            GatherType.Miner => 16u,
+            GatherType.Botanist => 17u,
+            GatherType.Fisher => 18u,
+            _ => 0u,
+        };
+        if (gatherClassJobId > 0)
+            DrawGameIcon(62100 + gatherClassJobId, new Vector2(20, 20));
+        ImGui.SameLine(0, 2);
+        ImGui.TextColored(Theme.Accent, RecipeResolverService.GetGatherTypeName(item.GatherClass));
+        ImGui.SameLine(0, Theme.PadLarge);
+        Theme.KeyValue("Level:", item.GatherLevel.ToString(), Theme.Accent);
+
+        if (item.ItemLevel > 0)
+        {
+            ImGui.SameLine(0, Theme.PadLarge);
+            Theme.KeyValue("Item Level:", item.ItemLevel.ToString(), Theme.Accent);
+        }
     }
 
     // ──────────────────────────────────────────────
@@ -162,7 +780,7 @@ public sealed class MainWindow
 
         // Left panel: Search results
         ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
-        ImGui.BeginChild("SearchResults", new Vector2(avail.X * 0.38f, contentHeight), ImGuiChildFlags.Border);
+        ImGui.BeginChild("SearchResults", new Vector2(avail.X * 0.38f, contentHeight), true);
         ImGui.PopStyleColor();
         {
             if (searchResults.Count == 0)
@@ -182,19 +800,23 @@ public sealed class MainWindow
                 {
                     var isSelected = selectedRecipe?.RecipeId == recipe.RecipeId;
 
-                    // Build clean display label
-                    var className = RecipeResolverService.GetCraftTypeName(recipe.CraftTypeId);
-                    var label = $"{recipe.ItemName}##recipe{recipe.RecipeId}";
+                    // Item icon + name
+                    DrawGameIcon(recipe.IconId, new Vector2(28, 28));
+                    ImGui.SameLine(0, Theme.PadSmall);
+                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
 
-                    if (ImGui.Selectable(label, isSelected))
+                    var label = $"{recipe.ItemName}##recipe{recipe.RecipeId}";
+                    if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 50, 0)))
                     {
                         selectedRecipe = recipe;
                         PreviewResolve();
                     }
 
-                    // Draw metadata on same line after the selectable
-                    ImGui.SameLine(ImGui.GetContentRegionAvail().X - 80);
-                    ImGui.TextColored(Theme.TextMuted, $"{className} {recipe.RequiredLevel}");
+                    // Job icon + level on right
+                    ImGui.SameLine(ImGui.GetContentRegionAvail().X - 40);
+                    DrawJobIcon(recipe.CraftTypeId, new Vector2(20, 20));
+                    ImGui.SameLine(0, 2);
+                    ImGui.TextColored(Theme.TextMuted, $"{recipe.RequiredLevel}");
 
                     // Badges on hover tooltip
                     if (ImGui.IsItemHovered() && (recipe.IsCollectable || recipe.IsExpert || recipe.RequiresSpecialist))
@@ -214,7 +836,7 @@ public sealed class MainWindow
 
         // Right panel: Recipe details
         ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
-        ImGui.BeginChild("RecipeDetails", new Vector2(0, contentHeight), ImGuiChildFlags.Border);
+        ImGui.BeginChild("RecipeDetails", new Vector2(0, contentHeight), true);
         ImGui.PopStyleColor();
         {
             if (selectedRecipe != null)
@@ -239,12 +861,13 @@ public sealed class MainWindow
     {
         var recipe = selectedRecipe!;
 
-        // Title
+        // Title with item icon
         ImGui.Spacing();
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
-        ImGui.PushFont(ImGui.GetFont()); // Same font but we'll use color for emphasis
+        DrawGameIcon(recipe.IconId, new Vector2(40, 40));
+        ImGui.SameLine(0, Theme.Pad);
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (40 - ImGui.GetTextLineHeight()) / 2);
         ImGui.TextColored(Theme.Gold, recipe.ItemName);
-        ImGui.PopFont();
 
         // Tags row
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
@@ -271,7 +894,11 @@ public sealed class MainWindow
 
         // Stats grid
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
-        Theme.KeyValue("Class:", RecipeResolverService.GetCraftTypeName(recipe.CraftTypeId), Theme.Accent);
+        ImGui.TextColored(Theme.TextSecondary, "Class:");
+        ImGui.SameLine();
+        DrawJobIcon(recipe.CraftTypeId, new Vector2(20, 20));
+        ImGui.SameLine(0, 2);
+        ImGui.TextColored(Theme.Accent, RecipeResolverService.GetCraftTypeName(recipe.CraftTypeId));
         ImGui.SameLine(0, Theme.PadLarge);
         Theme.KeyValue("Level:", recipe.RequiredLevel.ToString(), Theme.Accent);
         ImGui.SameLine(0, Theme.PadLarge);
@@ -299,6 +926,9 @@ public sealed class MainWindow
         foreach (var ing in recipe.Ingredients)
         {
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+            DrawGameIcon(ing.IconId, new Vector2(28, 28));
+            ImGui.SameLine(0, Theme.PadSmall);
+            ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
             ImGui.TextColored(Theme.TextPrimary, $"x{ing.QuantityNeeded}");
             ImGui.SameLine();
             ImGui.Text(ing.ItemName);
@@ -332,6 +962,9 @@ public sealed class MainWindow
                 foreach (var mat in previewResolution.GatherList)
                 {
                     ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+                    DrawGameIcon(mat.IconId, new Vector2(28, 28));
+                    ImGui.SameLine(0, Theme.PadSmall);
+                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
 
                     // Quantity with owned indicator
                     var remaining = mat.QuantityRemaining;
@@ -372,12 +1005,14 @@ public sealed class MainWindow
                 foreach (var step in previewResolution.CraftOrder.Take(previewResolution.CraftOrder.Count - 1))
                 {
                     ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+                    DrawGameIcon(step.Recipe.IconId, new Vector2(28, 28));
+                    ImGui.SameLine(0, Theme.PadSmall);
+                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
                     ImGui.TextColored(Theme.TextPrimary, $"x{step.Quantity}");
                     ImGui.SameLine();
                     ImGui.Text(step.Recipe.ItemName);
                     ImGui.SameLine();
-                    ImGui.TextColored(Theme.TextMuted,
-                        $"({RecipeResolverService.GetCraftTypeName(step.Recipe.CraftTypeId)})");
+                    DrawJobIcon(step.Recipe.CraftTypeId, new Vector2(18, 18));
                 }
             }
 
@@ -392,6 +1027,9 @@ public sealed class MainWindow
                 foreach (var mat in previewResolution.OtherMaterials)
                 {
                     ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+                    DrawGameIcon(mat.IconId, new Vector2(28, 28));
+                    ImGui.SameLine(0, Theme.PadSmall);
+                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
                     ImGui.TextColored(Theme.TextPrimary, $"x{mat.QuantityNeeded}");
                     ImGui.SameLine();
                     ImGui.Text(mat.ItemName);
@@ -411,7 +1049,7 @@ public sealed class MainWindow
         var canStart = selectedRecipe != null && engine.CurrentState == WorkflowState.Idle;
 
         if (!canStart) ImGui.BeginDisabled();
-        if (Theme.PrimaryButton("Start Workflow", new Vector2(140, 32)))
+        if (Theme.PrimaryButton("Start Workflow", new Vector2(160, 32)))
         {
             if (selectedRecipe != null)
                 engine.Start(selectedRecipe, craftQuantity);
@@ -844,7 +1482,7 @@ public sealed class MainWindow
 
         // Log entries
         ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
-        ImGui.BeginChild("LogScroll", Vector2.Zero, ImGuiChildFlags.None, ImGuiWindowFlags.HorizontalScrollbar);
+        ImGui.BeginChild("LogScroll", Vector2.Zero, false, ImGuiWindowFlags.HorizontalScrollbar);
         ImGui.PopStyleColor();
 
         var hasFilter = !string.IsNullOrWhiteSpace(logFilter);

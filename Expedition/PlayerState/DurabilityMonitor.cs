@@ -25,7 +25,7 @@ public sealed class DurabilityMonitor
             return new DurabilityReport { LowestPercent = 100, LowestItemName = "Unknown" };
 
         var equippedContainer = manager->GetInventoryContainer(InventoryType.EquippedItems);
-        if (equippedContainer == null || equippedContainer->Loaded == 0)
+        if (equippedContainer == null)
             return new DurabilityReport { LowestPercent = 100, LowestItemName = "Unknown" };
 
         var lowestPercent = 100;
@@ -90,7 +90,7 @@ public sealed class DurabilityMonitor
         foreach (var invType in types)
         {
             var container = manager->GetInventoryContainer(invType);
-            if (container == null || container->Loaded == 0) continue;
+            if (container == null) continue;
 
             for (var i = 0; i < container->Size; i++)
             {

@@ -1,5 +1,5 @@
 using System.Numerics;
-using ImGuiNET;
+using Dalamud.Bindings.ImGui;
 
 namespace Expedition.UI;
 
@@ -224,7 +224,7 @@ public static class Theme
         ImGui.PushStyleColor(ImGuiCol.ChildBg, CardBg);
         ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 4f);
         var size = new Vector2(-1, height);
-        var result = ImGui.BeginChild(id, size, ImGuiChildFlags.Border);
+        var result = ImGui.BeginChild(id, size, true);
         ImGui.PopStyleVar();
         ImGui.PopStyleColor();
         return result;
@@ -296,7 +296,7 @@ public static class Theme
     {
         ImGui.SameLine();
         ImGui.TextColored(TextMuted, "(?)");
-        if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort))
+        if (ImGui.IsItemHovered())
         {
             ImGui.BeginTooltip();
             ImGui.PushTextWrapPos(300);

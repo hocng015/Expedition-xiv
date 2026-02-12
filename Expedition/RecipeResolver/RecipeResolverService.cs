@@ -17,6 +17,9 @@ public sealed class RecipeResolverService
     // Cache: ItemId -> list of recipes that produce it
     private readonly Dictionary<uint, List<Recipe>> recipesByItemId = new();
 
+    // Cache: GatheringItem RowId -> gather type + level
+    private readonly Dictionary<uint, (GatherType Type, int Level)> gatherItemInfo = new();
+
     public RecipeResolverService()
     {
         recipeSheet = DalamudApi.DataManager.GetExcelSheet<Recipe>()!;
@@ -24,6 +27,7 @@ public sealed class RecipeResolverService
         gatheringItemSheet = DalamudApi.DataManager.GetExcelSheet<GatheringItem>()!;
 
         BuildRecipeCache();
+        BuildGatherCache();
     }
 
     private void BuildRecipeCache()
@@ -122,6 +126,59 @@ public sealed class RecipeResolverService
     }
 
     /// <summary>
+    /// Browses recipes with filtering by craft class, level range, and special properties.
+    /// </summary>
+    public List<RecipeNode> BrowseRecipes(
+        int? craftTypeId = null,
+        int minLevel = 1,
+        int maxLevel = 100,
+        bool collectableOnly = false,
+        bool expertOnly = false,
+        bool specialistOnly = false,
+        bool masterBookOnly = false,
+        int maxResults = 200)
+    {
+        var results = new List<RecipeNode>();
+
+        foreach (var recipe in recipeSheet)
+        {
+            if (results.Count >= maxResults) break;
+
+            var resultItem = recipe.ItemResult.Value;
+            if (resultItem.RowId == 0) continue;
+
+            var name = resultItem.Name.ExtractText();
+            if (string.IsNullOrEmpty(name)) continue;
+
+            // Filter by craft class (cheap check first)
+            if (craftTypeId.HasValue && (int)recipe.CraftType.RowId != craftTypeId.Value)
+                continue;
+
+            // Filter by level (cheap check)
+            var level = recipe.RecipeLevelTable.Value.ClassJobLevel;
+            if (level < minLevel || level > maxLevel)
+                continue;
+
+            // Filter by boolean flags (need to check item/recipe data)
+            if (collectableOnly && !resultItem.IsCollectable)
+                continue;
+
+            if (expertOnly && !recipe.IsExpert)
+                continue;
+
+            if (specialistOnly && !recipe.IsSpecializationRequired)
+                continue;
+
+            if (masterBookOnly && recipe.SecretRecipeBook.RowId == 0)
+                continue;
+
+            results.Add(BuildRecipeNode(recipe));
+        }
+
+        return results;
+    }
+
+    /// <summary>
     /// Fully resolves a recipe tree and produces the ordered gather/craft lists.
     /// </summary>
     public ResolvedRecipe Resolve(RecipeNode rootRecipe, int quantity)
@@ -180,6 +237,7 @@ public sealed class RecipeResolverService
                     {
                         ItemId = ingredient.ItemId,
                         ItemName = ingredient.ItemName,
+                        IconId = ingredient.IconId,
                         QuantityNeeded = totalNeeded,
                         IsCraftable = false,
                         IsGatherable = true,
@@ -201,6 +259,7 @@ public sealed class RecipeResolverService
                     {
                         ItemId = ingredient.ItemId,
                         ItemName = ingredient.ItemName,
+                        IconId = ingredient.IconId,
                         QuantityNeeded = totalNeeded,
                         IsCraftable = false,
                         IsGatherable = false,
@@ -257,6 +316,7 @@ public sealed class RecipeResolverService
             {
                 ItemId = ingredientItem.RowId,
                 ItemName = itemName,
+                IconId = (uint)ingredientItemRow.Value.Icon,
                 QuantityNeeded = amount,
                 IsCraftable = isCraftable,
                 IsGatherable = isGatherable,
@@ -274,6 +334,7 @@ public sealed class RecipeResolverService
         {
             ItemId = resultItem.RowId,
             ItemName = resultItem.Name.ExtractText(),
+            IconId = (uint)resultItem.Icon,
             RecipeId = recipe.RowId,
             YieldPerCraft = Math.Max(1, (int)recipe.AmountResult),
             CraftTypeId = (int)recipe.CraftType.RowId,
@@ -283,7 +344,7 @@ public sealed class RecipeResolverService
             RequiresSpecialist = recipe.IsSpecializationRequired,
             RecipeDurability = recipeLevelRow.Durability * recipe.DurabilityFactor / 100,
             SuggestedCraftsmanship = recipeLevelRow.SuggestedCraftsmanship,
-            SuggestedControl = recipeLevelRow.SuggestedControl,
+            SuggestedControl = 0, // Field removed from RecipeLevelTable in latest Lumina
             RequiresMasterBook = recipe.SecretRecipeBook.RowId != 0,
             MasterBookId = recipe.SecretRecipeBook.RowId,
             Ingredients = ingredients,
@@ -293,16 +354,8 @@ public sealed class RecipeResolverService
 
     private GatherType GetGatherType(uint itemId)
     {
-        foreach (var gi in gatheringItemSheet)
-        {
-            if (gi.Item.RowId == itemId)
-            {
-                // GatheringItem exists for this item. Determine type from
-                // the parent GatheringPointBase -> GatheringType if available,
-                // but for simplicity we mark as gatherable and let GBR figure it out.
-                return GatherType.Unknown;
-            }
-        }
+        if (gatherItemInfo.TryGetValue(itemId, out var info))
+            return info.Type;
         return GatherType.None;
     }
 
@@ -328,5 +381,171 @@ public sealed class RecipeResolverService
             7 => "CUL",
             _ => "???",
         };
+    }
+
+    /// <summary>
+    /// Returns the display name for a gather type.
+    /// </summary>
+    public static string GetGatherTypeName(GatherType type)
+    {
+        return type switch
+        {
+            GatherType.Miner => "MIN",
+            GatherType.Botanist => "BTN",
+            GatherType.Fisher => "FSH",
+            _ => "???",
+        };
+    }
+
+    private void BuildGatherCache()
+    {
+        var gpbSheet = DalamudApi.DataManager.GetExcelSheet<GatheringPointBase>();
+        if (gpbSheet == null) return;
+
+        // Build mapping: GatheringItem RowId -> GatherType
+        // GatheringType RowId: 0,1 = Mining, 2,3 = Botany, 4,5 = Fishing
+        var gatherItemTypeMap = new Dictionary<uint, GatherType>();
+        var gatherItemLevelMap = new Dictionary<uint, int>();
+
+        foreach (var gpb in gpbSheet)
+        {
+            var gatherTypeId = gpb.GatheringType.RowId;
+            var gatherType = gatherTypeId switch
+            {
+                0 or 1 => GatherType.Miner,
+                2 or 3 => GatherType.Botanist,
+                4 or 5 => GatherType.Fisher,
+                _ => GatherType.Unknown,
+            };
+            if (gatherType == GatherType.Unknown) continue;
+
+            var level = (int)gpb.GatheringLevel;
+
+            for (var i = 0; i < gpb.Item.Count; i++)
+            {
+                var giRef = gpb.Item[i];
+                if (giRef.RowId == 0) continue;
+
+                if (!gatherItemTypeMap.ContainsKey(giRef.RowId))
+                {
+                    gatherItemTypeMap[giRef.RowId] = gatherType;
+                    gatherItemLevelMap[giRef.RowId] = level;
+                }
+            }
+        }
+
+        // Now map to actual Item IDs from GatheringItem sheet
+        foreach (var gi in gatheringItemSheet)
+        {
+            if (gi.Item.RowId == 0) continue;
+
+            var type = gatherItemTypeMap.GetValueOrDefault(gi.RowId, GatherType.Unknown);
+            var level = gatherItemLevelMap.GetValueOrDefault(gi.RowId, 0);
+
+            gatherItemInfo[gi.Item.RowId] = (type, level);
+        }
+
+        // Also add fishing items from FishingSpot sheet
+        var fishingSpotSheet = DalamudApi.DataManager.GetExcelSheet<FishingSpot>();
+        if (fishingSpotSheet != null)
+        {
+            foreach (var spot in fishingSpotSheet)
+            {
+                var level = (int)spot.GatheringLevel;
+                for (var i = 0; i < spot.Item.Count; i++)
+                {
+                    var itemRef = spot.Item[i];
+                    if (itemRef.RowId == 0) continue;
+
+                    if (!gatherItemInfo.ContainsKey(itemRef.RowId))
+                        gatherItemInfo[itemRef.RowId] = (GatherType.Fisher, level);
+                }
+            }
+        }
+
+        // Also add spearfishing items from SpearfishingItem sheet
+        var spearfishSheet = DalamudApi.DataManager.GetExcelSheet<SpearfishingItem>();
+        if (spearfishSheet != null)
+        {
+            foreach (var sf in spearfishSheet)
+            {
+                var itemRef = sf.Item;
+                if (itemRef.RowId == 0) continue;
+
+                if (!gatherItemInfo.ContainsKey(itemRef.RowId))
+                    gatherItemInfo[itemRef.RowId] = (GatherType.Fisher, (int)sf.GatheringItemLevel.RowId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Browse gatherable items by gathering class and level range.
+    /// </summary>
+    public List<GatherableItemInfo> BrowseGatherItems(
+        GatherType? gatherClass = null,
+        int minLevel = 1,
+        int maxLevel = 100,
+        bool collectableOnly = false,
+        bool hideCrystals = true,
+        int maxResults = 200)
+    {
+        var results = new List<GatherableItemInfo>();
+
+        foreach (var kvp in gatherItemInfo)
+        {
+            if (results.Count >= maxResults) break;
+
+            var itemId = kvp.Key;
+            var (type, level) = kvp.Value;
+
+            // Filter by gather class
+            if (gatherClass.HasValue && type != gatherClass.Value)
+                continue;
+
+            // Filter by level
+            if (level < minLevel || level > maxLevel)
+                continue;
+
+            // Look up item data
+            var itemRow = itemSheet.GetRowOrDefault(itemId);
+            if (itemRow == null) continue;
+
+            var name = itemRow.Value.Name.ExtractText();
+            if (string.IsNullOrEmpty(name)) continue;
+
+            var isCrystal = IsCrystalItem(name);
+            if (hideCrystals && isCrystal)
+                continue;
+
+            if (collectableOnly && !itemRow.Value.IsCollectable)
+                continue;
+
+            var isAlsoCraftable = recipesByItemId.ContainsKey(itemId);
+
+            results.Add(new GatherableItemInfo
+            {
+                ItemId = itemId,
+                ItemName = name,
+                IconId = (uint)itemRow.Value.Icon,
+                GatherClass = type,
+                GatherLevel = level,
+                IsCollectable = itemRow.Value.IsCollectable,
+                IsCrystal = isCrystal,
+                IsAlsoCraftable = isAlsoCraftable,
+                ItemLevel = itemRow.Value.LevelItem.RowId > 0 ? (int)itemRow.Value.LevelItem.RowId : 0,
+            });
+        }
+
+        // Sort by level then name
+        results.Sort((a, b) =>
+        {
+            var levelCmp = a.GatherLevel.CompareTo(b.GatherLevel);
+            return levelCmp != 0 ? levelCmp : string.Compare(a.ItemName, b.ItemName, StringComparison.Ordinal);
+        });
+
+        if (results.Count > maxResults)
+            results.RemoveRange(maxResults, results.Count - maxResults);
+
+        return results;
     }
 }

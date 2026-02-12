@@ -26,21 +26,21 @@ public sealed class GpTracker
     /// <summary>
     /// Gets the current player GP from the game client.
     /// </summary>
-    public unsafe uint GetCurrentGp()
+    public uint GetCurrentGp()
     {
-        var player = FFXIVClientStructs.FFXIV.Client.Game.Character.CharacterManager.Instance()->LocalPlayer;
+        var player = DalamudApi.ClientState.LocalPlayer;
         if (player == null) return 0;
-        return player->Gp;
+        return player.CurrentGp;
     }
 
     /// <summary>
     /// Gets the player's max GP.
     /// </summary>
-    public unsafe uint GetMaxGp()
+    public uint GetMaxGp()
     {
-        var player = FFXIVClientStructs.FFXIV.Client.Game.Character.CharacterManager.Instance()->LocalPlayer;
+        var player = DalamudApi.ClientState.LocalPlayer;
         if (player == null) return 0;
-        return player->MaxGp;
+        return player.MaxGp;
     }
 
     /// <summary>

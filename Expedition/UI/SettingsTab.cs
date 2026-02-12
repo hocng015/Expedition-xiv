@@ -1,5 +1,5 @@
 using System.Numerics;
-using ImGuiNET;
+using Dalamud.Bindings.ImGui;
 
 namespace Expedition.UI;
 
@@ -29,7 +29,7 @@ public static class SettingsTab
         ImGui.Spacing();
         ImGui.Spacing();
 
-        ImGui.BeginChild("SettingsScroll", Vector2.Zero, ImGuiChildFlags.None);
+        ImGui.BeginChild("SettingsScroll", Vector2.Zero, false);
 
         DrawGeneralSection(config);
         DrawGatheringSection(config);

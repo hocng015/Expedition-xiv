@@ -13,6 +13,9 @@ public sealed class RecipeNode
     /// <summary>Display name of the product.</summary>
     public string ItemName { get; init; } = string.Empty;
 
+    /// <summary>Game icon ID for the product item.</summary>
+    public uint IconId { get; init; }
+
     /// <summary>Recipe ID in the game data (Lumina Recipe sheet row).</summary>
     public uint RecipeId { get; init; }
 

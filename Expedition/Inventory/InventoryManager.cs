@@ -36,7 +36,7 @@ public sealed class InventoryManager
         foreach (var invType in InventoryTypes)
         {
             var container = manager->GetInventoryContainer(invType);
-            if (container == null || container->Loaded == 0) continue;
+            if (container == null) continue;
 
             for (var i = 0; i < container->Size; i++)
             {
@@ -101,7 +101,7 @@ public sealed class InventoryManager
         foreach (var invType in bagTypes)
         {
             var container = manager->GetInventoryContainer(invType);
-            if (container == null || container->Loaded == 0) continue;
+            if (container == null) continue;
 
             for (var i = 0; i < container->Size; i++)
             {

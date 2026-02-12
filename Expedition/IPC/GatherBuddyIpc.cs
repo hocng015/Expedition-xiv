@@ -29,15 +29,15 @@ public sealed class GatherBuddyIpc : IDisposable
     {
         var pi = DalamudApi.PluginInterface;
 
-        version = pi.GetIpcSubscriber<int>("GatherbuddyReborn.Version");
-        identify = pi.GetIpcSubscriber<string, uint>("GatherbuddyReborn.Identify");
-        isAutoGatherEnabled = pi.GetIpcSubscriber<bool>("GatherbuddyReborn.IsAutoGatherEnabled");
-        getAutoGatherStatusText = pi.GetIpcSubscriber<string>("GatherbuddyReborn.GetAutoGatherStatusText");
-        setAutoGatherEnabled = pi.GetIpcSubscriber<bool, object?>("GatherbuddyReborn.SetAutoGatherEnabled");
-        isAutoGatherWaiting = pi.GetIpcSubscriber<bool>("GatherbuddyReborn.IsAutoGatherWaiting");
+        version = pi.GetIpcSubscriber<int>("GatherBuddyReborn.Version");
+        identify = pi.GetIpcSubscriber<string, uint>("GatherBuddyReborn.Identify");
+        isAutoGatherEnabled = pi.GetIpcSubscriber<bool>("GatherBuddyReborn.IsAutoGatherEnabled");
+        getAutoGatherStatusText = pi.GetIpcSubscriber<string>("GatherBuddyReborn.GetAutoGatherStatusText");
+        setAutoGatherEnabled = pi.GetIpcSubscriber<bool, object?>("GatherBuddyReborn.SetAutoGatherEnabled");
+        isAutoGatherWaiting = pi.GetIpcSubscriber<bool>("GatherBuddyReborn.IsAutoGatherWaiting");
 
-        autoGatherWaiting = pi.GetIpcSubscriber<object?>("GatherbuddyReborn.AutoGatherWaiting");
-        autoGatherEnabledChanged = pi.GetIpcSubscriber<bool, object?>("GatherbuddyReborn.AutoGatherEnabledChanged");
+        autoGatherWaiting = pi.GetIpcSubscriber<object?>("GatherBuddyReborn.AutoGatherWaiting");
+        autoGatherEnabledChanged = pi.GetIpcSubscriber<bool, object?>("GatherBuddyReborn.AutoGatherEnabledChanged");
 
         autoGatherWaiting.Subscribe(OnWaiting);
         autoGatherEnabledChanged.Subscribe(OnEnabledChanged);

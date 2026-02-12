@@ -12,6 +12,9 @@ public sealed class MaterialRequirement
     /// <summary>Display name of the material.</summary>
     public string ItemName { get; init; } = string.Empty;
 
+    /// <summary>Game icon ID for the material item.</summary>
+    public uint IconId { get; init; }
+
     /// <summary>Total quantity required.</summary>
     public int QuantityNeeded { get; set; }
 
