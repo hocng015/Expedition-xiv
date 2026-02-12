@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Reflection;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Textures;
 
@@ -553,6 +554,31 @@ public sealed class MainWindow
         var count = browseIsDol ? browseGatherResults.Count : browseResults.Count;
         var label = browseIsDol ? "items" : "recipes";
         ImGui.TextColored(Theme.TextSecondary, $"{count} {label}");
+
+        // Plugin icon at the bottom of the filter panel
+        DrawPluginIcon();
+    }
+
+    private static void DrawPluginIcon()
+    {
+        var wrap = DalamudApi.TextureProvider
+            .GetFromManifestResource(Assembly.GetExecutingAssembly(), "Expedition.Images.icon.png")
+            .GetWrapOrDefault();
+        if (wrap == null) return;
+
+        const float iconSize = 180f;
+        var availY = ImGui.GetContentRegionAvail().Y;
+        if (availY < iconSize + 8) return;
+
+        // Push the icon to the bottom of the panel
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + availY - iconSize - 4);
+
+        // Center horizontally within the 220px filter panel
+        var panelWidth = ImGui.GetContentRegionAvail().X;
+        var offsetX = (panelWidth - iconSize) * 0.5f;
+        if (offsetX > 0) ImGui.SetCursorPosX(ImGui.GetCursorPosX() + offsetX);
+
+        ImGui.Image(wrap.Handle, new Vector2(iconSize, iconSize));
     }
 
     private void DrawBrowseResults()

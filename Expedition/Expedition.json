@@ -7,6 +7,7 @@
   "InternalName": "Expedition",
   "AssemblyVersion": "0.3.0.0",
   "RepoUrl": "https://github.com/hocng015/Expedition-xiv",
+  "IconUrl": "https://raw.githubusercontent.com/hocng015/Expedition-xiv/main/Expedition/Images/icon.png",
   "ApplicableVersion": "any",
   "Tags": [
     "crafting",

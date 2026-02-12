@@ -24,4 +24,8 @@
     <DalamudPluginTags>crafting;gathering;automation;recipe;workflow;collectable</DalamudPluginTags>
   </PropertyGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Images\icon.png" />
+  </ItemGroup>
+
 </Project>
