@@ -13,6 +13,7 @@ public sealed class Configuration : IPluginConfiguration
     public bool AutoRepairEnabled { get; set; } = true;
     public int RepairThresholdPercent { get; set; } = 30;
     public bool AutoExtractMateriaEnabled { get; set; } = false;
+    public bool IncludeSaddlebagInScans { get; set; } = true;
 
     // --- Gathering ---
     public bool UseCollectableGathering { get; set; } = true;

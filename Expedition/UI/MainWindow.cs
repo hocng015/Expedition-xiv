@@ -1147,15 +1147,20 @@ public sealed class MainWindow
                 }
             }
 
-            // Sub-recipes
-            if (previewResolution.CraftOrder.Count > 1)
+            // Sub-recipes (filter out zero-quantity steps already covered by inventory)
+            var subRecipes = previewResolution.CraftOrder
+                .Take(previewResolution.CraftOrder.Count - 1)
+                .Where(s => s.Quantity > 0)
+                .ToList();
+
+            if (subRecipes.Count > 0)
             {
                 ImGui.Spacing();
                 ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
                 ImGui.TextColored(Theme.Gold, "Sub-Recipes (crafting order)");
                 ImGui.Spacing();
 
-                foreach (var step in previewResolution.CraftOrder.Take(previewResolution.CraftOrder.Count - 1))
+                foreach (var step in subRecipes)
                 {
                     ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
                     DrawGameIcon(step.Recipe.IconId, new Vector2(28, 28));
@@ -1166,6 +1171,15 @@ public sealed class MainWindow
                     ImGui.Text(step.Recipe.ItemName);
                     ImGui.SameLine();
                     DrawJobIcon(step.Recipe.CraftTypeId, new Vector2(18, 18));
+
+                    // Show how many the player already owns for this intermediate
+                    var saddlebag = Expedition.Config.IncludeSaddlebagInScans;
+                    var owned = plugin.InventoryManager.GetItemCount(step.Recipe.ItemId, includeSaddlebag: saddlebag);
+                    if (owned > 0)
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextColored(Theme.TextSecondary, $"(have {owned})");
+                    }
                 }
             }
 
@@ -1247,8 +1261,13 @@ public sealed class MainWindow
 
         try
         {
-            previewResolution = plugin.RecipeResolver.Resolve(selectedRecipe, craftQuantity);
-            plugin.InventoryManager.UpdateResolvedRecipe(previewResolution);
+            // Build inventory lookup so preview deducts owned intermediates
+            var saddlebag = Expedition.Config.IncludeSaddlebagInScans;
+            Func<uint, int> inventoryLookup = itemId
+                => plugin.InventoryManager.GetItemCount(itemId, includeSaddlebag: saddlebag);
+
+            previewResolution = plugin.RecipeResolver.Resolve(selectedRecipe, craftQuantity, inventoryLookup);
+            plugin.InventoryManager.UpdateResolvedRecipe(previewResolution, saddlebag);
         }
         catch (Exception ex)
         {

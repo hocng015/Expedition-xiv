@@ -183,12 +183,22 @@ public sealed class RecipeResolverService
     /// </summary>
     public ResolvedRecipe Resolve(RecipeNode rootRecipe, int quantity)
     {
+        return Resolve(rootRecipe, quantity, inventoryLookup: null);
+    }
+
+    /// <summary>
+    /// Fully resolves a recipe tree with inventory awareness.
+    /// When inventoryLookup is provided, already-owned intermediate crafted items are deducted
+    /// before recursing into sub-recipes, so only the delta of raw materials is computed.
+    /// </summary>
+    public ResolvedRecipe Resolve(RecipeNode rootRecipe, int quantity, Func<uint, int>? inventoryLookup)
+    {
         var gatherMap = new Dictionary<uint, MaterialRequirement>();
         var craftOrder = new List<CraftStep>();
         var otherMap = new Dictionary<uint, MaterialRequirement>();
         var visited = new HashSet<uint>();
 
-        ResolveRecursive(rootRecipe, quantity, gatherMap, craftOrder, otherMap, visited);
+        ResolveRecursive(rootRecipe, quantity, gatherMap, craftOrder, otherMap, visited, inventoryLookup);
 
         return new ResolvedRecipe
         {
@@ -205,7 +215,8 @@ public sealed class RecipeResolverService
         Dictionary<uint, MaterialRequirement> gatherMap,
         List<CraftStep> craftOrder,
         Dictionary<uint, MaterialRequirement> otherMap,
-        HashSet<uint> visited)
+        HashSet<uint> visited,
+        Func<uint, int>? inventoryLookup)
     {
         // How many times we need to craft this recipe
         var craftsNeeded = (int)Math.Ceiling((double)quantity / node.YieldPerCraft);
@@ -216,17 +227,28 @@ public sealed class RecipeResolverService
 
             if (ingredient.IsCraftable && ingredient.RecipeId.HasValue)
             {
-                // This ingredient is itself craftable -- recurse
-                var subNode = node.SubRecipes.FirstOrDefault(s => s.RecipeId == ingredient.RecipeId.Value);
-                if (subNode != null && !visited.Contains(subNode.RecipeId))
+                // This ingredient is itself craftable -- check inventory and deduct before recursing
+                var actualNeeded = totalNeeded;
+                if (inventoryLookup != null)
                 {
-                    visited.Add(subNode.RecipeId);
-                    ResolveRecursive(subNode, totalNeeded, gatherMap, craftOrder, otherMap, visited);
+                    var owned = inventoryLookup(ingredient.ItemId);
+                    actualNeeded = Math.Max(0, totalNeeded - owned);
                 }
+
+                if (actualNeeded > 0)
+                {
+                    var subNode = node.SubRecipes.FirstOrDefault(s => s.RecipeId == ingredient.RecipeId.Value);
+                    if (subNode != null && !visited.Contains(subNode.RecipeId))
+                    {
+                        visited.Add(subNode.RecipeId);
+                        ResolveRecursive(subNode, actualNeeded, gatherMap, craftOrder, otherMap, visited, inventoryLookup);
+                    }
+                }
+                // If actualNeeded == 0, the player already has enough -- skip entire sub-tree
             }
             else if (ingredient.IsGatherable)
             {
-                // Raw gatherable material
+                // Raw gatherable material (leaf-level deduction handled by QuantityOwned post-resolve)
                 if (gatherMap.TryGetValue(ingredient.ItemId, out var existing))
                 {
                     existing.QuantityNeeded += totalNeeded;
@@ -270,11 +292,14 @@ public sealed class RecipeResolverService
         }
 
         // Add this recipe's craft step (sub-components come before this in the list)
-        craftOrder.Add(new CraftStep
+        if (craftsNeeded > 0)
         {
-            Recipe = node,
-            Quantity = craftsNeeded,
-        });
+            craftOrder.Add(new CraftStep
+            {
+                Recipe = node,
+                Quantity = craftsNeeded,
+            });
+        }
     }
 
     private RecipeNode BuildRecipeNode(Recipe recipe)

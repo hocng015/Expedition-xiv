@@ -168,7 +168,7 @@ public sealed class WorkflowEngine : IDisposable
         // Build a resolved recipe with just a gather list entry.
         // QuantityNeeded must be currentInventory + requested so the task doesn't
         // instantly complete when the player already has some of the item.
-        var currentOwned = inventoryManager.GetItemCount(gatherItem.ItemId);
+        var currentOwned = inventoryManager.GetItemCount(gatherItem.ItemId, includeSaddlebag: config.IncludeSaddlebagInScans);
         var gatherMat = new MaterialRequirement
         {
             ItemId = gatherItem.ItemId,
@@ -285,7 +285,12 @@ public sealed class WorkflowEngine : IDisposable
 
         try
         {
-            ResolvedRecipe = recipeResolver.Resolve(CurrentRecipe!, TargetQuantity);
+            // Build inventory lookup so the resolver deducts owned intermediates
+            var saddlebag = config.IncludeSaddlebagInScans;
+            Func<uint, int> inventoryLookup = itemId
+                => inventoryManager.GetItemCount(itemId, includeSaddlebag: saddlebag);
+
+            ResolvedRecipe = recipeResolver.Resolve(CurrentRecipe!, TargetQuantity, inventoryLookup);
 
             var timedCount = ResolvedRecipe.GatherList.Count(g => g.IsTimedNode);
             var collectableCount = ResolvedRecipe.GatherList.Count(g => g.IsCollectable);
@@ -399,7 +404,7 @@ public sealed class WorkflowEngine : IDisposable
 
         try
         {
-            inventoryManager.UpdateResolvedRecipe(ResolvedRecipe!);
+            inventoryManager.UpdateResolvedRecipe(ResolvedRecipe!, config.IncludeSaddlebagInScans);
 
             var totalGatherNeeded = ResolvedRecipe!.GatherList.Sum(g => g.QuantityRemaining);
             var totalGatherItems = ResolvedRecipe.GatherList.Count(g => g.QuantityRemaining > 0);
@@ -551,7 +556,7 @@ public sealed class WorkflowEngine : IDisposable
             }
 
             AddLog("Gathering phase complete.");
-            inventoryManager.UpdateResolvedRecipe(ResolvedRecipe!);
+            inventoryManager.UpdateResolvedRecipe(ResolvedRecipe!, config.IncludeSaddlebagInScans);
 
             // If there's nothing to craft (gather-only workflow), complete immediately
             if (ResolvedRecipe!.CraftOrder.Count == 0)
@@ -628,7 +633,7 @@ public sealed class WorkflowEngine : IDisposable
             }
 
             // Verify the final target item is actually in inventory
-            var finalCount = inventoryManager.GetItemCount(CurrentRecipe!.ItemId);
+            var finalCount = inventoryManager.GetItemCount(CurrentRecipe!.ItemId, includeSaddlebag: config.IncludeSaddlebagInScans);
             AddLog($"Final inventory check: {CurrentRecipe.ItemName} x{finalCount} in bags.");
 
             var elapsed = StartTime.HasValue ? (DateTime.Now - StartTime.Value) : TimeSpan.Zero;

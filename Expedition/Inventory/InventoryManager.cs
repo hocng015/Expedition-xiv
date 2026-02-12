@@ -13,7 +13,7 @@ namespace Expedition.Inventory;
 public sealed class InventoryManager
 {
     /// <summary>
-    /// Inventory types to scan for materials.
+    /// Inventory types to scan for materials (player bags + crystals).
     /// </summary>
     private static readonly InventoryType[] InventoryTypes =
     {
@@ -25,9 +25,22 @@ public sealed class InventoryManager
     };
 
     /// <summary>
-    /// Gets the total count of an item across all inventory bags.
+    /// Saddlebag inventory types (standard + premium).
+    /// Data may be stale if the player hasn't opened the saddlebag since login.
     /// </summary>
-    public unsafe int GetItemCount(uint itemId, bool includeHq = true)
+    private static readonly InventoryType[] SaddlebagTypes =
+    {
+        InventoryType.SaddleBag1,
+        InventoryType.SaddleBag2,
+        InventoryType.PremiumSaddleBag1,
+        InventoryType.PremiumSaddleBag2,
+    };
+
+    /// <summary>
+    /// Gets the total count of an item across all inventory bags.
+    /// Optionally includes saddlebag (chocobo + premium) containers.
+    /// </summary>
+    public unsafe int GetItemCount(uint itemId, bool includeHq = true, bool includeSaddlebag = false)
     {
         var manager = InventoryManager_Game.Instance();
         if (manager == null) return 0;
@@ -35,21 +48,42 @@ public sealed class InventoryManager
         var count = 0;
         foreach (var invType in InventoryTypes)
         {
-            var container = manager->GetInventoryContainer(invType);
-            if (container == null) continue;
+            count += CountInContainer(manager, invType, itemId, includeHq);
+        }
 
-            for (var i = 0; i < container->Size; i++)
+        if (includeSaddlebag)
+        {
+            foreach (var invType in SaddlebagTypes)
             {
-                var slot = container->GetInventorySlot(i);
-                if (slot == null) continue;
-
-                if (slot->ItemId == itemId)
-                    count += (int)slot->Quantity;
-
-                // HQ items have the same base itemId but a flag
-                if (includeHq && slot->ItemId == itemId + 1000000)
-                    count += (int)slot->Quantity;
+                count += CountInContainer(manager, invType, itemId, includeHq);
             }
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Counts an item's quantity within a single inventory container.
+    /// Returns 0 if the container is null (not loaded).
+    /// </summary>
+    private static unsafe int CountInContainer(
+        InventoryManager_Game* manager, InventoryType invType, uint itemId, bool includeHq)
+    {
+        var container = manager->GetInventoryContainer(invType);
+        if (container == null) return 0;
+
+        var count = 0;
+        for (var i = 0; i < container->Size; i++)
+        {
+            var slot = container->GetInventorySlot(i);
+            if (slot == null) continue;
+
+            if (slot->ItemId == itemId)
+                count += (int)slot->Quantity;
+
+            // HQ items have the same base itemId but a flag
+            if (includeHq && slot->ItemId == itemId + 1000000)
+                count += (int)slot->Quantity;
         }
 
         return count;
@@ -59,26 +93,26 @@ public sealed class InventoryManager
     /// Updates the QuantityOwned field on each material requirement
     /// based on current inventory state.
     /// </summary>
-    public void UpdateOwnedQuantities(IEnumerable<MaterialRequirement> materials)
+    public void UpdateOwnedQuantities(IEnumerable<MaterialRequirement> materials, bool includeSaddlebag = false)
     {
         foreach (var mat in materials)
         {
-            mat.QuantityOwned = GetItemCount(mat.ItemId);
+            mat.QuantityOwned = GetItemCount(mat.ItemId, includeSaddlebag: includeSaddlebag);
         }
     }
 
     /// <summary>
     /// Updates owned quantities for the entire resolved recipe.
     /// </summary>
-    public void UpdateResolvedRecipe(ResolvedRecipe resolved)
+    public void UpdateResolvedRecipe(ResolvedRecipe resolved, bool includeSaddlebag = false)
     {
-        UpdateOwnedQuantities(resolved.GatherList);
-        UpdateOwnedQuantities(resolved.OtherMaterials);
+        UpdateOwnedQuantities(resolved.GatherList, includeSaddlebag);
+        UpdateOwnedQuantities(resolved.OtherMaterials, includeSaddlebag);
 
         // Also update owned for intermediate craft ingredients
         foreach (var step in resolved.CraftOrder)
         {
-            UpdateOwnedQuantities(step.Recipe.Ingredients);
+            UpdateOwnedQuantities(step.Recipe.Ingredients, includeSaddlebag);
         }
     }
 
