@@ -8,6 +8,7 @@ namespace Expedition.Crafting;
 public sealed class CraftingTask
 {
     public uint RecipeId { get; init; }
+    public uint ItemId { get; init; }
     public string ItemName { get; init; } = string.Empty;
     public int Quantity { get; set; }
     public int QuantityCrafted { get; set; }
@@ -17,6 +18,7 @@ public sealed class CraftingTask
     public string? PreferredSolver { get; init; }
     public CraftingTaskStatus Status { get; set; } = CraftingTaskStatus.Pending;
     public string? ErrorMessage { get; set; }
+    public int RetryCount { get; set; }
 
     public int QuantityRemaining => Math.Max(0, Quantity - QuantityCrafted);
     public bool IsComplete => QuantityRemaining <= 0;
@@ -26,6 +28,7 @@ public sealed class CraftingTask
         return new CraftingTask
         {
             RecipeId = step.Recipe.RecipeId,
+            ItemId = step.Recipe.ItemId,
             ItemName = step.Recipe.ItemName,
             Quantity = step.Quantity,
             IsCollectable = step.Recipe.IsCollectable,

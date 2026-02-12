@@ -610,22 +610,45 @@ public sealed class WorkflowEngine : IDisposable
             {
                 var failures = craftingOrchestrator.Tasks
                     .Where(t => t.Status == CraftingTaskStatus.Failed)
-                    .Select(t => t.ItemName);
-                AddLog($"Some crafting tasks failed: {string.Join(", ", failures)}");
+                    .Select(t => $"{t.ItemName} ({t.ErrorMessage})");
+                AddLog($"Crafting tasks failed: {string.Join(", ", failures)}");
             }
 
-            AddLog("Workflow complete!");
+            // Verify the final target item is actually in inventory
+            var finalCount = inventoryManager.GetItemCount(CurrentRecipe!.ItemId);
+            AddLog($"Final inventory check: {CurrentRecipe.ItemName} x{finalCount} in bags.");
+
             var elapsed = StartTime.HasValue ? (DateTime.Now - StartTime.Value) : TimeSpan.Zero;
-            SetStatus($"Completed: {CurrentRecipe!.ItemName} x{TargetQuantity} in {elapsed.TotalMinutes:F1}m");
 
-            if (config.NotifyOnCompletion)
+            if (craftingOrchestrator.HasFailures)
             {
-                DalamudApi.ChatGui.Print($"[Expedition] Workflow complete: {CurrentRecipe.ItemName} x{TargetQuantity}");
-                DalamudApi.ToastGui.ShowNormal($"Expedition: {CurrentRecipe.ItemName} x{TargetQuantity} done!");
-            }
+                // Workflow had failures — report the error clearly
+                var msg = $"Workflow incomplete: {CurrentRecipe.ItemName} — some craft steps failed.";
+                AddLog(msg);
+                SetStatus(msg);
 
-            TransitionTo(WorkflowState.Completed);
-            OnCompleted?.Invoke();
+                if (config.NotifyOnCompletion)
+                {
+                    DalamudApi.ChatGui.Print($"[Expedition] {msg}");
+                    DalamudApi.ToastGui.ShowError($"Expedition: Craft failed for {CurrentRecipe.ItemName}!");
+                }
+
+                HandleError(msg);
+            }
+            else
+            {
+                AddLog("Workflow complete!");
+                SetStatus($"Completed: {CurrentRecipe.ItemName} x{TargetQuantity} in {elapsed.TotalMinutes:F1}m");
+
+                if (config.NotifyOnCompletion)
+                {
+                    DalamudApi.ChatGui.Print($"[Expedition] Workflow complete: {CurrentRecipe.ItemName} x{TargetQuantity}");
+                    DalamudApi.ToastGui.ShowNormal($"Expedition: {CurrentRecipe.ItemName} x{TargetQuantity} done!");
+                }
+
+                TransitionTo(WorkflowState.Completed);
+                OnCompleted?.Invoke();
+            }
         }
     }
 

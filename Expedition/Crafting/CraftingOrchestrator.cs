@@ -14,6 +14,11 @@ public sealed class CraftingOrchestrator
     private int currentTaskIndex = -1;
     private DateTime lastPollTime = DateTime.MinValue;
     private bool waitingForArtisanToFinish;
+    private int inventoryCountBeforeCraft;
+    private Inventory.InventoryManager? cachedInventoryManager;
+
+    /// <summary>Maximum number of retry attempts per task when Artisan fails to craft.</summary>
+    private const int MaxRetries = 2;
 
     public CraftingOrchestratorState State { get; private set; } = CraftingOrchestratorState.Idle;
     public IReadOnlyList<CraftingTask> Tasks => taskQueue;
@@ -84,6 +89,7 @@ public sealed class CraftingOrchestrator
     public void Update(Inventory.InventoryManager inventoryManager)
     {
         if (State != CraftingOrchestratorState.Running) return;
+        cachedInventoryManager = inventoryManager;
 
         // Throttle polling
         if ((DateTime.Now - lastPollTime).TotalMilliseconds < 1000) return;
@@ -103,15 +109,82 @@ public sealed class CraftingOrchestrator
             {
                 waitingForArtisanToFinish = false;
 
-                // Check how many we crafted via inventory
-                var currentCount = inventoryManager.GetItemCount(task.RecipeId);
-                task.QuantityCrafted = task.Quantity; // Assume completion if Artisan finished
+                // Verify via inventory delta — how many were actually crafted?
+                var currentCount = inventoryManager.GetItemCount(task.ItemId);
+                var crafted = Math.Max(0, currentCount - inventoryCountBeforeCraft);
+                task.QuantityCrafted += crafted;
 
-                task.Status = CraftingTaskStatus.Completed;
-                StatusMessage = $"Finished crafting {task.ItemName}.";
-                DalamudApi.Log.Information(StatusMessage);
+                DalamudApi.Log.Information(
+                    $"Craft check: {task.ItemName} — had {inventoryCountBeforeCraft}, now {currentCount}, " +
+                    $"delta={crafted}, target={task.Quantity}, total crafted so far={task.QuantityCrafted}");
 
-                AdvanceToNextTask();
+                if (task.QuantityCrafted >= task.Quantity)
+                {
+                    // Successfully crafted the required amount
+                    task.Status = CraftingTaskStatus.Completed;
+                    StatusMessage = $"Finished crafting {task.ItemName} x{task.QuantityCrafted}.";
+                    DalamudApi.Log.Information(StatusMessage);
+                    AdvanceToNextTask();
+                }
+                else if (crafted == 0)
+                {
+                    // Artisan stopped but nothing was crafted — likely missing ingredients
+                    task.RetryCount++;
+                    if (task.RetryCount <= MaxRetries)
+                    {
+                        DalamudApi.Log.Warning(
+                            $"Craft task {task.ItemName} produced 0 items (attempt {task.RetryCount}/{MaxRetries}). " +
+                            $"Retrying in 3s...");
+                        StatusMessage = $"Retrying {task.ItemName} (attempt {task.RetryCount}/{MaxRetries})...";
+
+                        // Retry after a short delay
+                        Task.Run(async () =>
+                        {
+                            await Task.Delay(3000);
+                            inventoryCountBeforeCraft = inventoryManager.GetItemCount(task.ItemId);
+                            ipc.Artisan.CraftItem((ushort)task.RecipeId, task.QuantityRemaining);
+                            waitingForArtisanToFinish = true;
+                            DalamudApi.Log.Information($"Retry: Sent {task.ItemName} x{task.QuantityRemaining} to Artisan.");
+                        });
+                    }
+                    else
+                    {
+                        // Exhausted retries — mark as failed
+                        task.Status = CraftingTaskStatus.Failed;
+                        task.ErrorMessage = $"Artisan produced 0 items after {MaxRetries} retries (missing ingredients?).";
+                        StatusMessage = $"FAILED: {task.ItemName} — {task.ErrorMessage}";
+                        DalamudApi.Log.Error(StatusMessage);
+                        AdvanceToNextTask();
+                    }
+                }
+                else
+                {
+                    // Partial completion — some items crafted but not enough. Retry remainder.
+                    task.RetryCount++;
+                    if (task.RetryCount <= MaxRetries)
+                    {
+                        DalamudApi.Log.Warning(
+                            $"Craft task {task.ItemName}: crafted {task.QuantityCrafted}/{task.Quantity}. " +
+                            $"Retrying remaining {task.QuantityRemaining} (attempt {task.RetryCount}/{MaxRetries})...");
+                        StatusMessage = $"Crafting {task.ItemName} {task.QuantityCrafted}/{task.Quantity}, retrying...";
+
+                        Task.Run(async () =>
+                        {
+                            await Task.Delay(3000);
+                            inventoryCountBeforeCraft = inventoryManager.GetItemCount(task.ItemId);
+                            ipc.Artisan.CraftItem((ushort)task.RecipeId, task.QuantityRemaining);
+                            waitingForArtisanToFinish = true;
+                        });
+                    }
+                    else
+                    {
+                        task.Status = CraftingTaskStatus.Failed;
+                        task.ErrorMessage = $"Only crafted {task.QuantityCrafted}/{task.Quantity} after retries.";
+                        StatusMessage = $"FAILED: {task.ItemName} — {task.ErrorMessage}";
+                        DalamudApi.Log.Error(StatusMessage);
+                        AdvanceToNextTask();
+                    }
+                }
             }
             else
             {
@@ -139,6 +212,12 @@ public sealed class CraftingOrchestrator
         if (task == null) return;
 
         task.Status = CraftingTaskStatus.InProgress;
+
+        // Record inventory count before crafting so we can verify the delta
+        if (cachedInventoryManager != null)
+            inventoryCountBeforeCraft = cachedInventoryManager.GetItemCount(task.ItemId);
+        else
+            inventoryCountBeforeCraft = 0;
 
         // Set solver preference if specified
         if (!string.IsNullOrEmpty(task.PreferredSolver))
