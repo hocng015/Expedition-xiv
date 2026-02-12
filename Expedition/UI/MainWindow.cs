@@ -3,6 +3,7 @@ using System.Reflection;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Textures;
 
+using Expedition.Activation;
 using Expedition.Crafting;
 using Expedition.Gathering;
 using Expedition.RecipeResolver;
@@ -25,6 +26,11 @@ public sealed class MainWindow
     private int craftQuantity = 1;
     private bool showSettings;
     private string logFilter = string.Empty;
+
+    // Activation prompt state
+    private string activationKeyInput = string.Empty;
+    private string activationError = string.Empty;
+    private string activationSuccess = string.Empty;
 
     // Browse tab state
     private bool browseIsDol; // false = DOH crafting, true = DOL gathering
@@ -88,6 +94,14 @@ public sealed class MainWindow
         }
         ImGui.PopStyleVar();
 
+        // Gate all functionality behind activation
+        if (!ActivationService.IsActivated)
+        {
+            DrawActivationPrompt();
+            ImGui.End();
+            return;
+        }
+
         DrawMenuBar();
         DrawHeaderBar();
 
@@ -138,6 +152,119 @@ public sealed class MainWindow
         ImGui.PopStyleVar();
 
         ImGui.End();
+    }
+
+    // ──────────────────────────────────────────────
+    // Activation Prompt
+    // ──────────────────────────────────────────────
+
+    private void DrawActivationPrompt()
+    {
+        var avail = ImGui.GetContentRegionAvail();
+
+        // Center the activation content vertically
+        var contentHeight = 280f;
+        var offsetY = Math.Max(0, (avail.Y - contentHeight) / 2);
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + offsetY);
+
+        // Plugin icon centered at top
+        var wrap = DalamudApi.TextureProvider
+            .GetFromManifestResource(Assembly.GetExecutingAssembly(), "Expedition.Images.icon.png")
+            .GetWrapOrDefault();
+        if (wrap != null)
+        {
+            const float iconSize = 96f;
+            var iconOffsetX = (avail.X - iconSize) / 2;
+            if (iconOffsetX > 0) ImGui.SetCursorPosX(ImGui.GetCursorPosX() + iconOffsetX);
+            ImGui.Image(wrap.Handle, new Vector2(iconSize, iconSize));
+            ImGui.Spacing();
+        }
+
+        // Title
+        var title = "Expedition";
+        var titleSize = ImGui.CalcTextSize(title);
+        ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMin().X + (avail.X - titleSize.X) / 2);
+        ImGui.TextColored(Theme.Gold, title);
+
+        var subtitle = "Activation Required";
+        var subtitleSize = ImGui.CalcTextSize(subtitle);
+        ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMin().X + (avail.X - subtitleSize.X) / 2);
+        ImGui.TextColored(Theme.TextSecondary, subtitle);
+
+        ImGui.Spacing();
+        ImGui.Spacing();
+
+        // Centered input area
+        var inputWidth = Math.Min(420f, avail.X - 40);
+        var inputOffsetX = (avail.X - inputWidth) / 2;
+        ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMin().X + inputOffsetX);
+
+        ImGui.BeginGroup();
+        {
+            ImGui.SetNextItemWidth(inputWidth);
+            var enterPressed = ImGui.InputTextWithHint(
+                "##ActivationKey", "EXP-...", ref activationKeyInput, 256,
+                ImGuiInputTextFlags.EnterReturnsTrue);
+
+            ImGui.Spacing();
+
+            // Activate button
+            var buttonWidth = 120f;
+            var buttonOffsetX = (inputWidth - buttonWidth) / 2;
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + buttonOffsetX);
+
+            if (Theme.PrimaryButton("Activate", new Vector2(buttonWidth, 32)) || enterPressed)
+            {
+                activationError = string.Empty;
+                activationSuccess = string.Empty;
+
+                if (string.IsNullOrWhiteSpace(activationKeyInput))
+                {
+                    activationError = "Please enter an activation key.";
+                }
+                else
+                {
+                    var result = ActivationService.Activate(activationKeyInput.Trim(), Expedition.Config);
+                    if (result.IsValid)
+                    {
+                        activationSuccess = "Plugin activated successfully!";
+                        activationKeyInput = string.Empty;
+                    }
+                    else
+                    {
+                        activationError = result.ErrorMessage;
+                    }
+                }
+            }
+
+            // Error / success messages
+            if (!string.IsNullOrEmpty(activationError))
+            {
+                ImGui.Spacing();
+                var errSize = ImGui.CalcTextSize(activationError);
+                var errOffsetX = (inputWidth - errSize.X) / 2;
+                if (errOffsetX > 0) ImGui.SetCursorPosX(ImGui.GetCursorPosX() + errOffsetX);
+                ImGui.TextColored(Theme.Error, activationError);
+            }
+
+            if (!string.IsNullOrEmpty(activationSuccess))
+            {
+                ImGui.Spacing();
+                var sucSize = ImGui.CalcTextSize(activationSuccess);
+                var sucOffsetX = (inputWidth - sucSize.X) / 2;
+                if (sucOffsetX > 0) ImGui.SetCursorPosX(ImGui.GetCursorPosX() + sucOffsetX);
+                ImGui.TextColored(Theme.Success, activationSuccess);
+            }
+        }
+        ImGui.EndGroup();
+
+        // Hint text at the bottom
+        ImGui.Spacing();
+        ImGui.Spacing();
+        var hint = "Or use: /expedition activate <key>";
+        var hintSize = ImGui.CalcTextSize(hint);
+        ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMin().X + (avail.X - hintSize.X) / 2);
+        ImGui.TextColored(Theme.TextMuted, hint);
     }
 
     // ──────────────────────────────────────────────

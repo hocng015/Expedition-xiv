@@ -61,6 +61,9 @@ public sealed class Configuration : IPluginConfiguration
     public bool ShowDetailedStatus { get; set; } = false;
     public bool ShowEorzeanTime { get; set; } = true;
 
+    // --- Activation ---
+    public string ActivationKey { get; set; } = string.Empty;
+
     public void Save()
     {
         DalamudApi.PluginInterface.SavePluginConfig(this);

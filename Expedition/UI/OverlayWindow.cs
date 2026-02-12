@@ -1,6 +1,7 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 
+using Expedition.Activation;
 using Expedition.Crafting;
 using Expedition.Gathering;
 using Expedition.Scheduling;
@@ -30,6 +31,7 @@ public sealed class OverlayWindow
 
     public void Draw()
     {
+        if (!ActivationService.IsActivated) return;
         if (engine.CurrentState == WorkflowState.Idle) return;
 
         // Auto-dismiss overlay after workflow ends (Completed/Error)

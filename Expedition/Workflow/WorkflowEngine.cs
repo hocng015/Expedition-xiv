@@ -1,4 +1,5 @@
 using Dalamud.Game.ClientState.Conditions;
+using Expedition.Activation;
 using Expedition.Crafting;
 using Expedition.Gathering;
 using Expedition.Inventory;
@@ -95,6 +96,12 @@ public sealed class WorkflowEngine : IDisposable
     /// </summary>
     public void Start(RecipeNode recipe, int quantity)
     {
+        if (!ActivationService.IsActivated)
+        {
+            DalamudApi.ChatGui.PrintError("[Expedition] Plugin is not activated. Use /expedition activate <key>.");
+            return;
+        }
+
         // Auto-reset from terminal states
         if (CurrentState == WorkflowState.Completed || CurrentState == WorkflowState.Error)
         {
@@ -124,6 +131,12 @@ public sealed class WorkflowEngine : IDisposable
     /// </summary>
     public void StartGather(GatherableItemInfo gatherItem, int quantity)
     {
+        if (!ActivationService.IsActivated)
+        {
+            DalamudApi.ChatGui.PrintError("[Expedition] Plugin is not activated. Use /expedition activate <key>.");
+            return;
+        }
+
         // Auto-reset from terminal states
         if (CurrentState == WorkflowState.Completed || CurrentState == WorkflowState.Error)
         {

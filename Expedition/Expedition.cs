@@ -3,6 +3,7 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using Dalamud.Bindings.ImGui;
 
+using Expedition.Activation;
 using Expedition.Crafting;
 using Expedition.Gathering;
 using Expedition.Inventory;
@@ -36,12 +37,17 @@ public sealed class Expedition : IDalamudPlugin
     private readonly MainWindow mainWindow;
     private readonly OverlayWindow overlayWindow;
 
+    private DateTime lastExpirationCheck = DateTime.MinValue;
+
     public Expedition(IDalamudPluginInterface pluginInterface)
     {
         Instance = this;
         DalamudApi.Initialize(pluginInterface);
 
         Config = DalamudApi.PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+
+        // Initialize activation key validation
+        ActivationService.Initialize(Config);
 
         Ipc = new IpcManager();
         RecipeResolver = new RecipeResolverService();
@@ -61,6 +67,7 @@ public sealed class Expedition : IDalamudPlugin
         DalamudApi.CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
             HelpMessage = "Open the Expedition recipe automation window.\n" +
+                          "/expedition activate <key> — Activate the plugin with a license key.\n" +
                           "/expedition craft <item name> [quantity] — Start a full gather+craft workflow.\n" +
                           "/expedition stop — Stop the current workflow.\n" +
                           "/expedition status — Show current workflow status.",
@@ -98,6 +105,30 @@ public sealed class Expedition : IDalamudPlugin
     private void OnCommand(string command, string args)
     {
         var parts = args.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+
+        // Allow activate/deactivate commands through regardless of activation state
+        if (parts.Length > 0)
+        {
+            switch (parts[0].ToLowerInvariant())
+            {
+                case "activate":
+                    HandleActivateCommand(parts.Length > 1 ? parts[1] : string.Empty);
+                    return;
+
+                case "deactivate":
+                    ActivationService.Deactivate(Config);
+                    DalamudApi.ChatGui.Print("[Expedition] Activation key removed.");
+                    return;
+            }
+        }
+
+        // Gate all other commands behind activation
+        if (!ActivationService.IsActivated)
+        {
+            mainWindow.Toggle(); // Opens window which shows activation prompt
+            return;
+        }
+
         if (parts.Length == 0)
         {
             mainWindow.Toggle();
@@ -127,6 +158,27 @@ public sealed class Expedition : IDalamudPlugin
             default:
                 mainWindow.Toggle();
                 break;
+        }
+    }
+
+    private void HandleActivateCommand(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            DalamudApi.ChatGui.PrintError("[Expedition] Usage: /expedition activate <key>");
+            return;
+        }
+
+        var result = ActivationService.Activate(key.Trim(), Config);
+        if (result.IsValid)
+        {
+            DalamudApi.ChatGui.Print("[Expedition] Plugin activated successfully!");
+            if (result.Info != null && !result.Info.IsLifetime)
+                DalamudApi.ChatGui.Print($"[Expedition] Key expires: {result.Info.ExpiresAt:yyyy-MM-dd}");
+        }
+        else
+        {
+            DalamudApi.ChatGui.PrintError($"[Expedition] Activation failed: {result.ErrorMessage}");
         }
     }
 
@@ -174,13 +226,23 @@ public sealed class Expedition : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        // Periodically check activation key expiration (every 60s)
+        if ((DateTime.UtcNow - lastExpirationCheck).TotalSeconds > 60)
+        {
+            ActivationService.CheckExpiration();
+            lastExpirationCheck = DateTime.UtcNow;
+        }
+
+        // Skip workflow update when not activated
+        if (!ActivationService.IsActivated) return;
+
         WorkflowEngine.Update();
     }
 
     private void DrawUI()
     {
         mainWindow.Draw();
-        if (Config.ShowOverlay)
+        if (Config.ShowOverlay && ActivationService.IsActivated)
             overlayWindow.Draw();
     }
 
