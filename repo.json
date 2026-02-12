@@ -6,8 +6,9 @@
     "Punchline": "Automated gather-to-craft recipe workflow orchestrator.",
     "Description": "Orchestrates GatherBuddy Reborn and Artisan to fully automate the process of gathering materials and crafting any recipe in the game, including collectables, timed nodes, and multi-step dependency chains.",
     "InternalName": "Expedition",
-    "AssemblyVersion": "0.1.0.0",
+    "AssemblyVersion": "0.4.0.0",
     "RepoUrl": "https://github.com/hocng015/Expedition-xiv",
+    "IconUrl": "https://raw.githubusercontent.com/hocng015/Expedition-xiv/main/Expedition/Images/icon.png",
     "ApplicableVersion": "any",
     "Tags": [
       "crafting",
@@ -24,8 +25,9 @@
     "LoadPriority": 0,
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/hocng015/Expedition-xiv/releases/latest/download/latest.zip",
-    "DownloadLinkTesting": "https://github.com/hocng015/Expedition-xiv/releases/latest/download/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/hocng015/Expedition-xiv/releases/latest/download/latest.zip"
+    "DownloadLinkInstall": "https://github.com/hocng015/Expedition-xiv/releases/download/v0.4.0/Expedition-v0.4.0.zip",
+    "DownloadLinkUpdate": "https://github.com/hocng015/Expedition-xiv/releases/download/v0.4.0/Expedition-v0.4.0.zip",
+    "DownloadLinkTesting": "https://github.com/hocng015/Expedition-xiv/releases/download/v0.4.0/Expedition-v0.4.0.zip",
+    "DownloadCount": 0
   }
 ]
