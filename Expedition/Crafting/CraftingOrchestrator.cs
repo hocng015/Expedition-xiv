@@ -20,6 +20,24 @@ public sealed class CraftingOrchestrator
     /// <summary>Maximum number of retry attempts per task when Artisan fails to craft.</summary>
     private const int MaxRetries = 2;
 
+    /// <summary>
+    /// Grace period (seconds) after calling CraftItem before we start checking GetIsBusy().
+    /// Artisan needs time to: switch class → open crafting log → select recipe → begin craft.
+    /// </summary>
+    private const double StartupGraceSeconds = 5.0;
+
+    /// <summary>Delay (seconds) between tasks or before retries.</summary>
+    private const double InterTaskDelaySeconds = 3.0;
+
+    /// <summary>When the current CraftItem command was sent to Artisan.</summary>
+    private DateTime craftItemSentTime = DateTime.MinValue;
+
+    /// <summary>If set, we are in an inter-task or retry delay. Don't do anything until this time.</summary>
+    private DateTime? delayUntil;
+
+    /// <summary>If true, a retry is pending after the delay expires.</summary>
+    private bool pendingRetry;
+
     public CraftingOrchestratorState State { get; private set; } = CraftingOrchestratorState.Idle;
     public IReadOnlyList<CraftingTask> Tasks => taskQueue;
     public CraftingTask? CurrentTask => currentTaskIndex >= 0 && currentTaskIndex < taskQueue.Count
@@ -39,6 +57,8 @@ public sealed class CraftingOrchestrator
     {
         taskQueue.Clear();
         currentTaskIndex = -1;
+        delayUntil = null;
+        pendingRetry = false;
 
         foreach (var step in resolved.CraftOrder)
         {
@@ -80,23 +100,49 @@ public sealed class CraftingOrchestrator
 
         State = CraftingOrchestratorState.Idle;
         waitingForArtisanToFinish = false;
+        delayUntil = null;
+        pendingRetry = false;
         StatusMessage = "Crafting stopped.";
     }
 
     /// <summary>
     /// Called each frame by the workflow engine to poll status.
+    /// All state transitions happen on the framework thread (no Task.Run for state changes).
     /// </summary>
     public void Update(Inventory.InventoryManager inventoryManager)
     {
         if (State != CraftingOrchestratorState.Running) return;
         cachedInventoryManager = inventoryManager;
 
-        // Throttle polling
+        // Throttle polling to 1 second
         if ((DateTime.Now - lastPollTime).TotalMilliseconds < 1000) return;
         lastPollTime = DateTime.Now;
 
-        var task = CurrentTask;
-        if (task == null)
+        // If we're in a delay (inter-task or retry), wait it out
+        if (delayUntil.HasValue)
+        {
+            if (DateTime.Now < delayUntil.Value) return;
+            delayUntil = null;
+
+            if (pendingStartNext)
+            {
+                // Inter-task delay expired — start the next task
+                pendingStartNext = false;
+                StartCurrentTask();
+            }
+            else if (pendingRetry)
+            {
+                // Retry delay expired — resend the craft command
+                pendingRetry = false;
+                var task = CurrentTask;
+                if (task != null)
+                    SendCraftCommand(task, task.QuantityRemaining);
+            }
+            return;
+        }
+
+        var currentTask = CurrentTask;
+        if (currentTask == null)
         {
             State = CraftingOrchestratorState.Completed;
             return;
@@ -104,100 +150,31 @@ public sealed class CraftingOrchestrator
 
         if (waitingForArtisanToFinish)
         {
+            // Enforce startup grace period — don't check busy state too early
+            var elapsed = (DateTime.Now - craftItemSentTime).TotalSeconds;
+            if (elapsed < StartupGraceSeconds)
+            {
+                StatusMessage = $"Waiting for Artisan to start {currentTask.ItemName}... ({elapsed:F0}s)";
+                return;
+            }
+
             // Check if Artisan has finished
             if (!ipc.Artisan.GetIsBusy())
             {
                 waitingForArtisanToFinish = false;
-
-                // Verify via inventory delta — how many were actually crafted?
-                var currentCount = inventoryManager.GetItemCount(task.ItemId);
-                var crafted = Math.Max(0, currentCount - inventoryCountBeforeCraft);
-                task.QuantityCrafted += crafted;
-
-                DalamudApi.Log.Information(
-                    $"Craft check: {task.ItemName} — had {inventoryCountBeforeCraft}, now {currentCount}, " +
-                    $"delta={crafted}, target={task.Quantity}, total crafted so far={task.QuantityCrafted}");
-
-                if (task.QuantityCrafted >= task.Quantity)
-                {
-                    // Successfully crafted the required amount
-                    task.Status = CraftingTaskStatus.Completed;
-                    StatusMessage = $"Finished crafting {task.ItemName} x{task.QuantityCrafted}.";
-                    DalamudApi.Log.Information(StatusMessage);
-                    AdvanceToNextTask();
-                }
-                else if (crafted == 0)
-                {
-                    // Artisan stopped but nothing was crafted — likely missing ingredients
-                    task.RetryCount++;
-                    if (task.RetryCount <= MaxRetries)
-                    {
-                        DalamudApi.Log.Warning(
-                            $"Craft task {task.ItemName} produced 0 items (attempt {task.RetryCount}/{MaxRetries}). " +
-                            $"Retrying in 3s...");
-                        StatusMessage = $"Retrying {task.ItemName} (attempt {task.RetryCount}/{MaxRetries})...";
-
-                        // Retry after a short delay
-                        Task.Run(async () =>
-                        {
-                            await Task.Delay(3000);
-                            inventoryCountBeforeCraft = inventoryManager.GetItemCount(task.ItemId);
-                            ipc.Artisan.CraftItem((ushort)task.RecipeId, task.QuantityRemaining);
-                            waitingForArtisanToFinish = true;
-                            DalamudApi.Log.Information($"Retry: Sent {task.ItemName} x{task.QuantityRemaining} to Artisan.");
-                        });
-                    }
-                    else
-                    {
-                        // Exhausted retries — mark as failed
-                        task.Status = CraftingTaskStatus.Failed;
-                        task.ErrorMessage = $"Artisan produced 0 items after {MaxRetries} retries (missing ingredients?).";
-                        StatusMessage = $"FAILED: {task.ItemName} — {task.ErrorMessage}";
-                        DalamudApi.Log.Error(StatusMessage);
-                        AdvanceToNextTask();
-                    }
-                }
-                else
-                {
-                    // Partial completion — some items crafted but not enough. Retry remainder.
-                    task.RetryCount++;
-                    if (task.RetryCount <= MaxRetries)
-                    {
-                        DalamudApi.Log.Warning(
-                            $"Craft task {task.ItemName}: crafted {task.QuantityCrafted}/{task.Quantity}. " +
-                            $"Retrying remaining {task.QuantityRemaining} (attempt {task.RetryCount}/{MaxRetries})...");
-                        StatusMessage = $"Crafting {task.ItemName} {task.QuantityCrafted}/{task.Quantity}, retrying...";
-
-                        Task.Run(async () =>
-                        {
-                            await Task.Delay(3000);
-                            inventoryCountBeforeCraft = inventoryManager.GetItemCount(task.ItemId);
-                            ipc.Artisan.CraftItem((ushort)task.RecipeId, task.QuantityRemaining);
-                            waitingForArtisanToFinish = true;
-                        });
-                    }
-                    else
-                    {
-                        task.Status = CraftingTaskStatus.Failed;
-                        task.ErrorMessage = $"Only crafted {task.QuantityCrafted}/{task.Quantity} after retries.";
-                        StatusMessage = $"FAILED: {task.ItemName} — {task.ErrorMessage}";
-                        DalamudApi.Log.Error(StatusMessage);
-                        AdvanceToNextTask();
-                    }
-                }
+                HandleArtisanFinished(currentTask, inventoryManager);
             }
             else
             {
                 // Artisan still working
                 var enduranceActive = ipc.Artisan.GetEnduranceStatus();
-                var listRunning = ipc.Artisan.GetIsListRunning();
-                StatusMessage = $"Crafting {task.ItemName}... (Artisan busy, endurance={enduranceActive})";
+                StatusMessage = $"Crafting {currentTask.ItemName}... (Artisan busy, endurance={enduranceActive})";
             }
             return;
         }
 
         // Shouldn't get here normally, but handle edge case
-        if (task.Status == CraftingTaskStatus.InProgress)
+        if (currentTask.Status == CraftingTaskStatus.InProgress)
         {
             waitingForArtisanToFinish = true;
         }
@@ -206,18 +183,126 @@ public sealed class CraftingOrchestrator
     public bool IsComplete => State == CraftingOrchestratorState.Completed || taskQueue.Count == 0;
     public bool HasFailures => taskQueue.Any(t => t.Status == CraftingTaskStatus.Failed);
 
-    private void StartCurrentTask()
+    /// <summary>
+    /// Checks whether a task's required ingredients are available by looking at
+    /// whether any prerequisite craft tasks in the queue failed.
+    /// </summary>
+    private bool HasFailedPrerequisites(CraftingTask task)
     {
-        var task = CurrentTask;
-        if (task == null) return;
+        // Check if any earlier task in the queue failed — those tasks produce
+        // ingredients that later tasks may depend on.
+        for (var i = 0; i < currentTaskIndex; i++)
+        {
+            if (taskQueue[i].Status == CraftingTaskStatus.Failed)
+                return true;
+        }
+        return false;
+    }
 
-        task.Status = CraftingTaskStatus.InProgress;
+    private void HandleArtisanFinished(CraftingTask task, Inventory.InventoryManager inventoryManager)
+    {
+        // Verify via inventory delta — how many were actually crafted?
+        var currentCount = inventoryManager.GetItemCount(task.ItemId);
+        var crafted = Math.Max(0, currentCount - inventoryCountBeforeCraft);
+        task.QuantityCrafted += crafted;
 
+        DalamudApi.Log.Information(
+            $"Craft check: {task.ItemName} — had {inventoryCountBeforeCraft}, now {currentCount}, " +
+            $"delta={crafted}, target={task.Quantity}, total crafted so far={task.QuantityCrafted}");
+
+        if (task.QuantityCrafted >= task.Quantity)
+        {
+            // Successfully crafted the required amount
+            task.Status = CraftingTaskStatus.Completed;
+            StatusMessage = $"Finished crafting {task.ItemName} x{task.QuantityCrafted}.";
+            DalamudApi.Log.Information(StatusMessage);
+            AdvanceToNextTask();
+        }
+        else if (crafted == 0)
+        {
+            // Artisan stopped but nothing was crafted — likely missing ingredients or class issue
+            task.RetryCount++;
+            if (task.RetryCount <= MaxRetries)
+            {
+                DalamudApi.Log.Warning(
+                    $"Craft task {task.ItemName} produced 0 items (attempt {task.RetryCount}/{MaxRetries}). " +
+                    $"Retrying in {InterTaskDelaySeconds}s...");
+                StatusMessage = $"Retrying {task.ItemName} (attempt {task.RetryCount}/{MaxRetries})...";
+
+                // Schedule retry via delay (no Task.Run — stays on framework thread)
+                pendingRetry = true;
+                delayUntil = DateTime.Now.AddSeconds(InterTaskDelaySeconds);
+            }
+            else
+            {
+                // Exhausted retries — mark as failed
+                task.Status = CraftingTaskStatus.Failed;
+                task.ErrorMessage = $"Artisan produced 0 items after {MaxRetries} retries (missing ingredients?).";
+                StatusMessage = $"FAILED: {task.ItemName} — {task.ErrorMessage}";
+                DalamudApi.Log.Error(StatusMessage);
+                AdvanceToNextTask();
+            }
+        }
+        else
+        {
+            // Partial completion — some items crafted but not enough. Retry remainder.
+            task.RetryCount++;
+            if (task.RetryCount <= MaxRetries)
+            {
+                DalamudApi.Log.Warning(
+                    $"Craft task {task.ItemName}: crafted {task.QuantityCrafted}/{task.Quantity}. " +
+                    $"Retrying remaining {task.QuantityRemaining} (attempt {task.RetryCount}/{MaxRetries})...");
+                StatusMessage = $"Crafting {task.ItemName} {task.QuantityCrafted}/{task.Quantity}, retrying...";
+
+                pendingRetry = true;
+                delayUntil = DateTime.Now.AddSeconds(InterTaskDelaySeconds);
+            }
+            else
+            {
+                task.Status = CraftingTaskStatus.Failed;
+                task.ErrorMessage = $"Only crafted {task.QuantityCrafted}/{task.Quantity} after retries.";
+                StatusMessage = $"FAILED: {task.ItemName} — {task.ErrorMessage}";
+                DalamudApi.Log.Error(StatusMessage);
+                AdvanceToNextTask();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sends the CraftItem command to Artisan and records the inventory baseline.
+    /// </summary>
+    private void SendCraftCommand(CraftingTask task, int quantity)
+    {
         // Record inventory count before crafting so we can verify the delta
         if (cachedInventoryManager != null)
             inventoryCountBeforeCraft = cachedInventoryManager.GetItemCount(task.ItemId);
         else
             inventoryCountBeforeCraft = 0;
+
+        ipc.Artisan.CraftItem((ushort)task.RecipeId, quantity);
+        craftItemSentTime = DateTime.Now;
+        waitingForArtisanToFinish = true;
+
+        DalamudApi.Log.Information($"Sent CraftItem to Artisan: {task.ItemName} x{quantity} (inventory baseline={inventoryCountBeforeCraft})");
+    }
+
+    private void StartCurrentTask()
+    {
+        var task = CurrentTask;
+        if (task == null) return;
+
+        // Check for cascading failures — if a prerequisite craft failed, skip this task
+        if (HasFailedPrerequisites(task))
+        {
+            task.Status = CraftingTaskStatus.Failed;
+            task.ErrorMessage = "Skipped: a prerequisite craft step failed.";
+            StatusMessage = $"Skipped {task.ItemName} — prerequisite failed.";
+            DalamudApi.Log.Warning(StatusMessage);
+            AdvanceToNextTask();
+            return;
+        }
+
+        task.Status = CraftingTaskStatus.InProgress;
 
         // Set solver preference if specified
         if (!string.IsNullOrEmpty(task.PreferredSolver))
@@ -225,12 +310,11 @@ public sealed class CraftingOrchestrator
             ipc.Artisan.ChangeSolver(task.RecipeId, task.PreferredSolver, temporary: true);
         }
 
-        // Tell Artisan to craft the item
-        ipc.Artisan.CraftItem((ushort)task.RecipeId, task.Quantity);
-
-        waitingForArtisanToFinish = true;
         StatusMessage = $"Crafting {task.ItemName} x{task.Quantity} ({RecipeResolverService.GetCraftTypeName(task.CraftTypeId)})...";
         DalamudApi.Log.Information(StatusMessage);
+
+        // Tell Artisan to craft the item
+        SendCraftCommand(task, task.Quantity);
     }
 
     private void AdvanceToNextTask()
@@ -251,13 +335,18 @@ public sealed class CraftingOrchestrator
             return;
         }
 
-        // Small delay before starting next craft (let Artisan settle)
-        Task.Run(async () =>
-        {
-            await Task.Delay(2000);
-            StartCurrentTask();
-        });
+        // Delay before starting next craft (let Artisan settle) — handled in Update loop
+        delayUntil = DateTime.Now.AddSeconds(InterTaskDelaySeconds);
+        pendingRetry = false;
+
+        // Use a callback approach: after the delay, StartCurrentTask will be called
+        // We piggyback on the delay mechanism but need separate handling
+        // Set a flag so the delay expiry triggers StartCurrentTask instead of a retry
+        pendingStartNext = true;
     }
+
+    /// <summary>If true, the delay expiry should start the next task (not a retry).</summary>
+    private bool pendingStartNext;
 }
 
 public enum CraftingOrchestratorState
