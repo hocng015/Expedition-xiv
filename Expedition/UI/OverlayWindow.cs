@@ -17,6 +17,11 @@ public sealed class OverlayWindow
     private readonly WorkflowEngine engine;
     private readonly Expedition plugin;
 
+    /// <summary>How long to keep the overlay visible after completion/error before auto-dismissing (seconds).</summary>
+    private const float DismissDelay = 5f;
+
+    private DateTime? terminalStateTime;
+
     public OverlayWindow(WorkflowEngine engine, Expedition plugin)
     {
         this.engine = engine;
@@ -26,6 +31,19 @@ public sealed class OverlayWindow
     public void Draw()
     {
         if (engine.CurrentState == WorkflowState.Idle) return;
+
+        // Auto-dismiss overlay after workflow ends (Completed/Error)
+        var isTerminal = engine.CurrentState is WorkflowState.Completed or WorkflowState.Error;
+        if (isTerminal)
+        {
+            terminalStateTime ??= DateTime.Now;
+            if ((DateTime.Now - terminalStateTime.Value).TotalSeconds > DismissDelay)
+                return;
+        }
+        else
+        {
+            terminalStateTime = null;
+        }
 
         ImGui.SetNextWindowSize(new Vector2(340, 0), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
