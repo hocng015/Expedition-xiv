@@ -58,7 +58,7 @@ public sealed class GatheringTask
         {
             ItemId = mat.ItemId,
             ItemName = mat.ItemName,
-            QuantityNeeded = mat.QuantityRemaining,
+            QuantityNeeded = mat.QuantityNeeded,
             IsCollectable = mat.IsCollectable,
             GatherType = mat.GatherType,
             IsTimedNode = mat.IsTimedNode,

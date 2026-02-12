@@ -1,4 +1,6 @@
 using FFXIVClientStructs.FFXIV.Client.Game;
+using Lumina.Excel;
+using Lumina.Excel.Sheets;
 
 namespace Expedition.PlayerState;
 
@@ -15,10 +17,17 @@ namespace Expedition.PlayerState;
 /// </summary>
 public sealed class DurabilityMonitor
 {
+    private readonly ExcelSheet<Item>? itemSheet;
+
+    public DurabilityMonitor()
+    {
+        itemSheet = DalamudApi.DataManager.GetExcelSheet<Item>();
+    }
+
     /// <summary>
-    /// Scans all equipped gear and returns the lowest durability percentage.
+    /// Scans all equipped gear and returns a full durability report.
     /// </summary>
-    public unsafe DurabilityReport GetReport()
+    public unsafe DurabilityReport GetReport(int warningThreshold = 50)
     {
         var manager = InventoryManager.Instance();
         if (manager == null)
@@ -42,11 +51,14 @@ public sealed class DurabilityMonitor
 
             // Condition is stored as a value where 30000 = 100%
             var conditionPercent = (int)(slot->Condition / 300.0);
+
+            if (conditionPercent < warningThreshold)
+                belowThreshold++;
+
             if (conditionPercent < lowestPercent)
             {
                 lowestPercent = conditionPercent;
-                // Would need Lumina lookup for name; use slot index for now
-                lowestName = $"Equipment slot {i}";
+                lowestName = LookupItemName(slot->ItemId) ?? GetSlotName(i);
             }
         }
 
@@ -64,7 +76,7 @@ public sealed class DurabilityMonitor
     /// </summary>
     public bool IsRepairNeeded(int thresholdPercent)
     {
-        var report = GetReport();
+        var report = GetReport(thresholdPercent);
         return report.LowestPercent < thresholdPercent;
     }
 
@@ -77,9 +89,7 @@ public sealed class DurabilityMonitor
         var manager = InventoryManager.Instance();
         if (manager == null) return false;
 
-        // Grade 8 Dark Matter
-        const uint darkMatter8 = 33916;
-        // Also check older grades as fallback
+        // Dark Matter grades (8 is current, older grades for fallback)
         uint[] darkMatterIds = { 33916, 21800, 12884, 10386, 7968, 5595, 5594, 5593 };
 
         var types = new[] {
@@ -107,6 +117,40 @@ public sealed class DurabilityMonitor
 
         return false;
     }
+
+    /// <summary>
+    /// Resolves an item name from Lumina data.
+    /// </summary>
+    private string? LookupItemName(uint itemId)
+    {
+        if (itemSheet == null) return null;
+        var row = itemSheet.GetRowOrDefault(itemId);
+        if (row == null) return null;
+        var name = row.Value.Name.ExtractText();
+        return string.IsNullOrEmpty(name) ? null : name;
+    }
+
+    /// <summary>
+    /// Human-readable name for an equipment slot index.
+    /// </summary>
+    private static string GetSlotName(int slotIndex) => slotIndex switch
+    {
+        0 => "Main Hand",
+        1 => "Off Hand",
+        2 => "Head",
+        3 => "Body",
+        4 => "Hands",
+        5 => "Waist",
+        6 => "Legs",
+        7 => "Feet",
+        8 => "Ears",
+        9 => "Neck",
+        10 => "Wrists",
+        11 => "Ring (Right)",
+        12 => "Ring (Left)",
+        13 => "Soul Crystal",
+        _ => $"Slot {slotIndex}",
+    };
 }
 
 public sealed class DurabilityReport
@@ -120,10 +164,10 @@ public sealed class DurabilityReport
     {
         get
         {
-            if (LowestPercent > 50) return $"Durability: {LowestPercent}% (OK)";
-            if (LowestPercent > 20) return $"Durability: {LowestPercent}% (Low - consider repair)";
-            if (LowestPercent > 0) return $"Durability: {LowestPercent}% (CRITICAL - repair needed!)";
-            return "Durability: 0% (BROKEN - repair required!)";
+            if (LowestPercent > 50) return $"Durability: {LowestPercent}% — {LowestItemName} (OK)";
+            if (LowestPercent > 20) return $"Durability: {LowestPercent}% — {LowestItemName} (Low)";
+            if (LowestPercent > 0) return $"Durability: {LowestPercent}% — {LowestItemName} (CRITICAL!)";
+            return $"Durability: 0% — {LowestItemName} (BROKEN!)";
         }
     }
 }

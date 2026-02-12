@@ -1,3 +1,4 @@
+using Dalamud.Game.ClientState.Conditions;
 using Expedition.Crafting;
 using Expedition.Gathering;
 using Expedition.Inventory;
@@ -90,9 +91,16 @@ public sealed class WorkflowEngine : IDisposable
 
     /// <summary>
     /// Starts a new workflow for the given recipe and quantity.
+    /// Auto-resets from Completed/Error states.
     /// </summary>
     public void Start(RecipeNode recipe, int quantity)
     {
+        // Auto-reset from terminal states
+        if (CurrentState == WorkflowState.Completed || CurrentState == WorkflowState.Error)
+        {
+            TransitionTo(WorkflowState.Idle);
+        }
+
         if (CurrentState != WorkflowState.Idle)
         {
             DalamudApi.Log.Warning("Cannot start workflow: already running.");
@@ -107,6 +115,73 @@ public sealed class WorkflowEngine : IDisposable
 
         AddLog($"Starting workflow: {recipe.ItemName} x{quantity}");
         TransitionTo(WorkflowState.Resolving);
+    }
+
+    /// <summary>
+    /// Starts a gather-only workflow for a gatherable item.
+    /// Skips recipe resolution and crafting, goes straight to gathering.
+    /// Auto-resets from Completed/Error states.
+    /// </summary>
+    public void StartGather(GatherableItemInfo gatherItem, int quantity)
+    {
+        // Auto-reset from terminal states
+        if (CurrentState == WorkflowState.Completed || CurrentState == WorkflowState.Error)
+        {
+            TransitionTo(WorkflowState.Idle);
+        }
+
+        if (CurrentState != WorkflowState.Idle)
+        {
+            DalamudApi.Log.Warning("Cannot start workflow: already running.");
+            return;
+        }
+
+        // Create a minimal RecipeNode to represent the gather target
+        CurrentRecipe = new RecipeNode
+        {
+            ItemId = gatherItem.ItemId,
+            ItemName = gatherItem.ItemName,
+            IconId = gatherItem.IconId,
+            RecipeId = 0,
+            YieldPerCraft = 1,
+            CraftTypeId = -1, // No craft class
+            RequiredLevel = gatherItem.GatherLevel,
+        };
+        TargetQuantity = quantity;
+        StartTime = DateTime.Now;
+        Log.Clear();
+        ResetOneShots();
+
+        // Build a resolved recipe with just a gather list entry.
+        // QuantityNeeded must be currentInventory + requested so the task doesn't
+        // instantly complete when the player already has some of the item.
+        var currentOwned = inventoryManager.GetItemCount(gatherItem.ItemId);
+        var gatherMat = new MaterialRequirement
+        {
+            ItemId = gatherItem.ItemId,
+            ItemName = gatherItem.ItemName,
+            IconId = gatherItem.IconId,
+            QuantityNeeded = currentOwned + quantity,
+            QuantityOwned = currentOwned,
+            IsCraftable = false,
+            IsGatherable = true,
+            GatherType = gatherItem.GatherClass,
+        };
+        ResolvedRecipe = new ResolvedRecipe
+        {
+            RootRecipe = CurrentRecipe,
+            GatherList = new List<MaterialRequirement> { gatherMat },
+            CraftOrder = new List<CraftStep>(),
+            OtherMaterials = new List<MaterialRequirement>(),
+        };
+
+        AddLog($"Starting gather workflow: {gatherItem.ItemName} x{quantity}");
+
+        // Skip resolve/validate/inventory, go to gathering prep
+        resolveCompleted = true;
+        validationCompleted = true;
+        inventoryCheckCompleted = true;
+        TransitionTo(WorkflowState.PreparingGather);
     }
 
     /// <summary>
@@ -365,9 +440,38 @@ public sealed class WorkflowEngine : IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns true if the player is currently occupied with crafting, synthesis UI, or
+    /// other blocking states that would prevent GBR from teleporting/gathering.
+    /// </summary>
+    private static bool IsPlayerOccupied()
+    {
+        var cond = DalamudApi.Condition;
+        return cond[ConditionFlag.Crafting]
+            || cond[ConditionFlag.PreparingToCraft]
+            || cond[ConditionFlag.ExecutingCraftingAction]
+            || cond[ConditionFlag.Occupied]
+            || cond[ConditionFlag.Occupied30]
+            || cond[ConditionFlag.Occupied33]
+            || cond[ConditionFlag.Occupied38]
+            || cond[ConditionFlag.Occupied39]
+            || cond[ConditionFlag.OccupiedInCutSceneEvent]
+            || cond[ConditionFlag.OccupiedInQuestEvent]
+            || cond[ConditionFlag.BetweenAreas]
+            || cond[ConditionFlag.BetweenAreas51];
+    }
+
     private void ExecutePreparingGather()
     {
         CurrentPhase = WorkflowPhase.Gathering;
+
+        // Wait for the player to be free (e.g. close crafting window from a previous step)
+        if (IsPlayerOccupied())
+        {
+            SetStatus("Waiting for player to finish current activity before gathering...");
+            return; // Will retry next frame
+        }
+
         SetStatus("Preparing gathering queue...");
 
         try
@@ -435,7 +539,27 @@ public sealed class WorkflowEngine : IDisposable
 
             AddLog("Gathering phase complete.");
             inventoryManager.UpdateResolvedRecipe(ResolvedRecipe!);
-            TransitionTo(WorkflowState.PreparingCraft);
+
+            // If there's nothing to craft (gather-only workflow), complete immediately
+            if (ResolvedRecipe!.CraftOrder.Count == 0)
+            {
+                var elapsed = StartTime.HasValue ? (DateTime.Now - StartTime.Value) : TimeSpan.Zero;
+                AddLog("Workflow complete! (gather-only)");
+                SetStatus($"Completed: {CurrentRecipe!.ItemName} x{TargetQuantity} in {elapsed.TotalMinutes:F1}m");
+
+                if (config.NotifyOnCompletion)
+                {
+                    DalamudApi.ChatGui.Print($"[Expedition] Gathering complete: {CurrentRecipe.ItemName} x{TargetQuantity}");
+                    DalamudApi.ToastGui.ShowNormal($"Expedition: {CurrentRecipe.ItemName} x{TargetQuantity} gathered!");
+                }
+
+                TransitionTo(WorkflowState.Completed);
+                OnCompleted?.Invoke();
+            }
+            else
+            {
+                TransitionTo(WorkflowState.PreparingCraft);
+            }
         }
     }
 

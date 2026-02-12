@@ -434,13 +434,17 @@ public sealed class RecipeResolverService
             }
         }
 
-        // Now map to actual Item IDs from GatheringItem sheet
+        // Map GatheringItem RowIds to actual Item IDs, but only if
+        // we found the item in a real gathering point (has known type + level)
         foreach (var gi in gatheringItemSheet)
         {
             if (gi.Item.RowId == 0) continue;
 
-            var type = gatherItemTypeMap.GetValueOrDefault(gi.RowId, GatherType.Unknown);
+            if (!gatherItemTypeMap.TryGetValue(gi.RowId, out var type)) continue;
+            if (type == GatherType.Unknown) continue;
+
             var level = gatherItemLevelMap.GetValueOrDefault(gi.RowId, 0);
+            if (level <= 0) continue;
 
             gatherItemInfo[gi.Item.RowId] = (type, level);
         }
@@ -452,6 +456,8 @@ public sealed class RecipeResolverService
             foreach (var spot in fishingSpotSheet)
             {
                 var level = (int)spot.GatheringLevel;
+                if (level <= 0) continue;
+
                 for (var i = 0; i < spot.Item.Count; i++)
                 {
                     var itemRef = spot.Item[i];
@@ -472,8 +478,11 @@ public sealed class RecipeResolverService
                 var itemRef = sf.Item;
                 if (itemRef.RowId == 0) continue;
 
+                var sfLevel = (int)sf.GatheringItemLevel.RowId;
+                if (sfLevel <= 0) continue;
+
                 if (!gatherItemInfo.ContainsKey(itemRef.RowId))
-                    gatherItemInfo[itemRef.RowId] = (GatherType.Fisher, (int)sf.GatheringItemLevel.RowId);
+                    gatherItemInfo[itemRef.RowId] = (GatherType.Fisher, sfLevel);
             }
         }
     }
@@ -497,6 +506,10 @@ public sealed class RecipeResolverService
 
             var itemId = kvp.Key;
             var (type, level) = kvp.Value;
+
+            // Skip items without a known gather class
+            if (type == GatherType.Unknown || type == GatherType.None)
+                continue;
 
             // Filter by gather class
             if (gatherClass.HasValue && type != gatherClass.Value)

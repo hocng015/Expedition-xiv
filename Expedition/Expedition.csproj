@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <Authors>Expedition Contributors</Authors>
-    <Version>0.1.0.0</Version>
+    <Version>0.3.0.0</Version>
     <Description>Automated recipe workflow orchestrator - gathers and crafts any item via GatherBuddy Reborn and Artisan.</Description>
     <RootNamespace>Expedition</RootNamespace>
     <AssemblyName>Expedition</AssemblyName>

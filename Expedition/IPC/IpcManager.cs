@@ -6,11 +6,13 @@ namespace Expedition.IPC;
 public sealed class IpcManager : IDisposable
 {
     public GatherBuddyIpc GatherBuddy { get; }
+    public GatherBuddyListManager GatherBuddyLists { get; }
     public ArtisanIpc Artisan { get; }
 
     public IpcManager()
     {
         GatherBuddy = new GatherBuddyIpc();
+        GatherBuddyLists = new GatherBuddyListManager();
         Artisan = new ArtisanIpc();
     }
 

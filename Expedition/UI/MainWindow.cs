@@ -216,7 +216,7 @@ public sealed class MainWindow
         }
 
         // ── Right: Food buff status ──
-        var player = DalamudApi.ClientState.LocalPlayer;
+        var player = DalamudApi.ObjectTable.LocalPlayer;
         if (player != null)
         {
             var buffTracker = plugin.WorkflowEngine.BuffTracker;
@@ -1046,13 +1046,19 @@ public sealed class MainWindow
     private void DrawRecipeActionBar()
     {
         var engine = plugin.WorkflowEngine;
-        var canStart = selectedRecipe != null && engine.CurrentState == WorkflowState.Idle;
+        var hasSelection = selectedRecipe != null || selectedGatherItem != null;
+        var canStart = hasSelection && (engine.CurrentState == WorkflowState.Idle
+            || engine.CurrentState == WorkflowState.Completed
+            || engine.CurrentState == WorkflowState.Error);
 
         if (!canStart) ImGui.BeginDisabled();
-        if (Theme.PrimaryButton("Start Workflow", new Vector2(160, 32)))
+        var buttonLabel = selectedGatherItem != null ? "Start Gathering" : "Start Workflow";
+        if (Theme.PrimaryButton(buttonLabel, new Vector2(160, 32)))
         {
             if (selectedRecipe != null)
                 engine.Start(selectedRecipe, craftQuantity);
+            else if (selectedGatherItem != null)
+                engine.StartGather(selectedGatherItem, craftQuantity);
         }
         if (!canStart) ImGui.EndDisabled();
 

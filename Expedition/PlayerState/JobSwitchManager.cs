@@ -46,7 +46,7 @@ public sealed class JobSwitchManager
     /// </summary>
     public static uint GetCurrentJobId()
     {
-        var player = DalamudApi.ClientState.LocalPlayer;
+        var player = DalamudApi.ObjectTable.LocalPlayer;
         if (player == null) return 0;
         return player.ClassJob.RowId;
     }
@@ -73,10 +73,11 @@ public sealed class JobSwitchManager
     /// Validates that all crafting classes needed by the resolved recipe
     /// are at sufficient level. Returns a list of problems found.
     /// </summary>
-    public static List<string> ValidateCraftingLevels(
+    public static unsafe List<string> ValidateCraftingLevels(
         IEnumerable<RecipeResolver.CraftStep> craftOrder)
     {
         var problems = new List<string>();
+        var playerLevels = GetPlayerClassLevels();
 
         foreach (var step in craftOrder)
         {
@@ -84,14 +85,52 @@ public sealed class JobSwitchManager
             var jobName = RecipeResolver.RecipeResolverService.GetCraftTypeName(step.Recipe.CraftTypeId);
             var requiredLevel = step.Recipe.RequiredLevel;
 
-            // In a full implementation, we'd check the player's actual level via
-            // the PlayerState game struct. For now, log the requirement.
-            problems.Add($"Requires {jobName} Lv{requiredLevel} for {step.Recipe.ItemName}");
+            if (requiredJob == 0) continue;
+
+            if (playerLevels.TryGetValue(requiredJob, out var actualLevel))
+            {
+                if (actualLevel < requiredLevel)
+                {
+                    problems.Add($"{jobName} is Lv{actualLevel} but Lv{requiredLevel} is needed for {step.Recipe.ItemName}");
+                }
+            }
+            else
+            {
+                // Could not determine level — warn
+                problems.Add($"Could not verify {jobName} level for {step.Recipe.ItemName} (requires Lv{requiredLevel})");
+            }
         }
 
-        // Only return actual problems (level too low), not informational
-        // In full implementation: compare against actual levels
-        return new List<string>();
+        return problems;
+    }
+
+    /// <summary>
+    /// Reads actual player class/job levels from the game's PlayerState struct.
+    /// Returns a dictionary of ClassJob ID -> level.
+    /// </summary>
+    private static unsafe Dictionary<uint, int> GetPlayerClassLevels()
+    {
+        var levels = new Dictionary<uint, int>();
+
+        try
+        {
+            var playerState = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
+            if (playerState == null) return levels;
+
+            // ClassJob IDs 8-18 map to DoH/DoL (CRP=8 through FSH=18)
+            // PlayerState.ClassJobLevels is indexed by ClassJob RowId
+            for (uint jobId = CRP; jobId <= FSH; jobId++)
+            {
+                var level = playerState->ClassJobLevels[(int)jobId];
+                levels[jobId] = level;
+            }
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Debug($"Failed to read player levels: {ex.Message}");
+        }
+
+        return levels;
     }
 
     /// <summary>
