@@ -1,9 +1,11 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
 
 using Expedition.Activation;
 using Expedition.Crafting;
 using Expedition.Gathering;
+using Expedition.RecipeResolver;
 using Expedition.Scheduling;
 using Expedition.Workflow;
 
@@ -20,6 +22,9 @@ public sealed class OverlayWindow
 
     /// <summary>How long to keep the overlay visible after completion/error before auto-dismissing (seconds).</summary>
     private const float DismissDelay = 5f;
+
+    /// <summary>Scale factor applied to text and UI elements in the overlay.</summary>
+    private const float Scale = 1.35f;
 
     private DateTime? terminalStateTime;
 
@@ -47,10 +52,10 @@ public sealed class OverlayWindow
             terminalStateTime = null;
         }
 
-        ImGui.SetNextWindowSize(new Vector2(340, 0), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(460, 0), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
 
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(10, 8));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(14, 12));
         ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 6f);
         ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0.08f, 0.08f, 0.10f, 0.92f));
         ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(0.25f, 0.25f, 0.30f, 0.60f));
@@ -68,10 +73,16 @@ public sealed class OverlayWindow
             return;
         }
 
+        // Scale up all text and elements
+        ImGui.SetWindowFontScale(Scale);
+
         DrawHeader();
+        DrawMaterials();
         DrawProgress();
         DrawHealthRow();
         DrawControls();
+
+        ImGui.SetWindowFontScale(1.0f);
 
         ImGui.PopStyleColor(2);
         ImGui.PopStyleVar(2);
@@ -103,7 +114,7 @@ public sealed class OverlayWindow
         {
             var timeText = EorzeanTime.FormatCurrentTime();
             var timeWidth = ImGui.CalcTextSize(timeText).X;
-            ImGui.SameLine(ImGui.GetContentRegionAvail().X - timeWidth + 10);
+            ImGui.SameLine(ImGui.GetContentRegionAvail().X - timeWidth + 14);
             ImGui.TextColored(Theme.TextMuted, timeText);
         }
 
@@ -118,8 +129,10 @@ public sealed class OverlayWindow
             if (engine.StartTime.HasValue)
             {
                 var elapsed = DateTime.Now - engine.StartTime.Value;
-                ImGui.SameLine(ImGui.GetContentRegionAvail().X - 40);
-                ImGui.TextColored(Theme.TextMuted, $"{elapsed.Hours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}");
+                var timeStr = $"{elapsed.Hours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}";
+                var timeWidth = ImGui.CalcTextSize(timeStr).X;
+                ImGui.SameLine(ImGui.GetContentRegionAvail().X - timeWidth + 14);
+                ImGui.TextColored(Theme.TextMuted, timeStr);
             }
         }
 
@@ -132,6 +145,85 @@ public sealed class OverlayWindow
         }
 
         ImGui.Spacing();
+    }
+
+    private void DrawMaterials()
+    {
+        var resolved = engine.ResolvedRecipe;
+        if (resolved == null) return;
+
+        var otherMats = resolved.OtherMaterials;
+        if (otherMats == null || otherMats.Count == 0) return;
+
+        var vendorItems = otherMats.Where(m => m.IsVendorItem && m.VendorInfo != null).ToList();
+        var dropItems = otherMats.Where(m => m.IsMobDrop && m.MobDrops != null && m.MobDrops.Count > 0 && (!m.IsVendorItem || m.VendorInfo == null)).ToList();
+
+        if (vendorItems.Count == 0 && dropItems.Count == 0) return;
+
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // Vendor items
+        foreach (var mat in vendorItems)
+        {
+            var v = mat.VendorInfo!;
+            var remaining = mat.QuantityRemaining;
+            var qtyColor = remaining == 0 ? Theme.Success : Theme.TextPrimary;
+
+            ImGui.TextColored(qtyColor, $"x{mat.QuantityNeeded}");
+            ImGui.SameLine();
+            ImGui.TextColored(Theme.Gold, mat.ItemName);
+
+            ImGui.SameLine();
+            var loc = string.IsNullOrEmpty(v.ZoneName) ? v.NpcName : $"{v.NpcName}, {v.ZoneName}";
+            ImGui.TextColored(Theme.TextMuted, $"— {loc}");
+
+            if (v.HasMapCoords)
+            {
+                ImGui.SameLine();
+                if (ImGui.Button($"Map##ov{mat.ItemId}", new Vector2(50 * Scale, 24 * Scale)))
+                    OpenMapPin(v.TerritoryTypeId, v.MapId, v.MapX, v.MapY);
+            }
+        }
+
+        // Mob drop items
+        foreach (var mat in dropItems)
+        {
+            var remaining = mat.QuantityRemaining;
+            var qtyColor = remaining == 0 ? Theme.Success : Theme.TextPrimary;
+            var topMob = mat.MobDrops![0];
+
+            ImGui.TextColored(qtyColor, $"x{mat.QuantityNeeded}");
+            ImGui.SameLine();
+            ImGui.TextColored(Theme.Warning, mat.ItemName);
+
+            ImGui.SameLine();
+            var zone = string.IsNullOrEmpty(topMob.ZoneName) ? "" : $", {topMob.ZoneName}";
+            var lvl = string.IsNullOrEmpty(topMob.Level) ? "" : $" Lv.{topMob.Level}";
+            ImGui.TextColored(Theme.TextMuted, $"— {topMob.MobName}{lvl}{zone}");
+
+            if (topMob.HasMapCoords)
+            {
+                ImGui.SameLine();
+                if (ImGui.Button($"Map##ov{mat.ItemId}", new Vector2(50 * Scale, 24 * Scale)))
+                    OpenMapPin(topMob.TerritoryTypeId, topMob.MapId, topMob.MapX, topMob.MapY);
+            }
+        }
+
+        ImGui.Spacing();
+    }
+
+    private static void OpenMapPin(uint territoryTypeId, uint mapId, float mapX, float mapY)
+    {
+        try
+        {
+            var payload = new MapLinkPayload(territoryTypeId, mapId, mapX, mapY);
+            DalamudApi.GameGui.OpenMapWithMapLink(payload);
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Warning(ex, $"Failed to open map pin at ({mapX:F1}, {mapY:F1})");
+        }
     }
 
     private void DrawProgress()
@@ -154,7 +246,7 @@ public sealed class OverlayWindow
                     fraction = (completed + itemFraction) / total;
                 }
 
-                Theme.ProgressBar(fraction, Theme.Accent, $"Gathering: {completed}/{total}", 14);
+                Theme.ProgressBar(fraction, Theme.Accent, $"Gathering: {completed}/{total}", 20);
                 ImGui.Spacing();
             }
         }
@@ -167,7 +259,7 @@ public sealed class OverlayWindow
                 var total = orch.Tasks.Count;
                 var fraction = total > 0 ? (float)completed / total : 0;
 
-                Theme.ProgressBar(fraction, Theme.Gold, $"Crafting: {completed}/{total}", 14);
+                Theme.ProgressBar(fraction, Theme.Gold, $"Crafting: {completed}/{total}", 20);
                 ImGui.Spacing();
             }
         }
@@ -210,14 +302,16 @@ public sealed class OverlayWindow
         ImGui.Separator();
         ImGui.Spacing();
 
+        var btnH = 30 * Scale;
+
         if (state == WorkflowState.Paused)
         {
-            if (Theme.PrimaryButton("Resume", new Vector2(70, 22)))
+            if (Theme.PrimaryButton("Resume", new Vector2(100 * Scale, btnH)))
                 engine.Resume();
-            ImGui.SameLine(0, Theme.PadSmall);
+            ImGui.SameLine(0, Theme.Pad);
         }
 
-        if (Theme.DangerButton("Stop", new Vector2(50, 22)))
+        if (Theme.DangerButton("Stop", new Vector2(70 * Scale, btnH)))
             engine.Cancel();
     }
 }

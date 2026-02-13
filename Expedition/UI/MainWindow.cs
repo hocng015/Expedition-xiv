@@ -1,12 +1,15 @@
 using System.Numerics;
 using System.Reflection;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Interface.Textures;
 
 using Expedition.Activation;
 using Expedition.Crafting;
 using Expedition.Gathering;
+using Expedition.Inventory;
 using Expedition.RecipeResolver;
+using InventoryMgr = Expedition.Inventory.InventoryManager;
 using Expedition.Scheduling;
 using Expedition.Workflow;
 
@@ -419,6 +422,34 @@ public sealed class MainWindow
     {
         if (craftTypeId < 0 || craftTypeId >= CraftTypeToClassJobId.Length) return;
         DrawGameIcon(62100 + CraftTypeToClassJobId[craftTypeId], size);
+    }
+
+    /// <summary>
+    /// Opens the in-game map with a flag pin at the given map coordinates.
+    /// </summary>
+    private static void OpenMapPin(uint territoryTypeId, uint mapId, float mapX, float mapY)
+    {
+        try
+        {
+            var payload = new MapLinkPayload(territoryTypeId, mapId, mapX, mapY);
+            DalamudApi.GameGui.OpenMapWithMapLink(payload);
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Warning(ex, $"Failed to open map pin at ({mapX:F1}, {mapY:F1})");
+        }
+    }
+
+    /// <summary>
+    /// Draws a small inline "Map" button. Returns true if clicked and enabled.
+    /// </summary>
+    private static bool MapButton(string id, bool enabled)
+    {
+        if (!enabled) ImGui.BeginDisabled();
+        ImGui.SameLine();
+        var clicked = ImGui.SmallButton($"Map##{id}");
+        if (!enabled) ImGui.EndDisabled();
+        return clicked && enabled;
     }
 
     // ──────────────────────────────────────────────
@@ -1183,27 +1214,134 @@ public sealed class MainWindow
                 }
             }
 
-            // Other materials
+            // Other materials — split into vendor and non-vendor sections
             if (previewResolution.OtherMaterials.Count > 0)
             {
-                ImGui.Spacing();
-                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
-                ImGui.TextColored(Theme.Warning, "Other Sources (vendor/drops)");
-                ImGui.Spacing();
+                var vendorItems = previewResolution.OtherMaterials
+                    .Where(m => m.IsVendorItem && m.VendorInfo != null).ToList();
+                var otherItems = previewResolution.OtherMaterials
+                    .Where(m => !m.IsVendorItem || m.VendorInfo == null).ToList();
 
-                foreach (var mat in previewResolution.OtherMaterials)
+                // Vendor purchases section
+                if (vendorItems.Count > 0)
                 {
-                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
-                    DrawGameIcon(mat.IconId, new Vector2(28, 28));
-                    ImGui.SameLine(0, Theme.PadSmall);
-                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
-                    ImGui.TextColored(Theme.TextPrimary, $"x{mat.QuantityNeeded}");
-                    ImGui.SameLine();
-                    ImGui.Text(mat.ItemName);
-                    if (mat.QuantityOwned > 0)
+                    ImGui.Spacing();
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                    ImGui.TextColored(Theme.Gold, "Vendor Purchases");
+                    ImGui.Spacing();
+
+                    foreach (var mat in vendorItems)
                     {
+                        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+                        DrawGameIcon(mat.IconId, new Vector2(28, 28));
+                        ImGui.SameLine(0, Theme.PadSmall);
+                        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
+
+                        var remaining = mat.QuantityRemaining;
+                        var qtyColor = remaining == 0 ? Theme.Success : Theme.TextPrimary;
+                        ImGui.TextColored(qtyColor, $"x{mat.QuantityNeeded}");
                         ImGui.SameLine();
-                        ImGui.TextColored(Theme.TextSecondary, $"(have {mat.QuantityOwned})");
+                        ImGui.Text(mat.ItemName);
+
+                        if (mat.QuantityOwned > 0)
+                        {
+                            ImGui.SameLine();
+                            ImGui.TextColored(remaining == 0 ? Theme.SuccessDim : Theme.TextSecondary,
+                                $"(have {mat.QuantityOwned})");
+                        }
+
+                        // Vendor details: NPC name, zone, price
+                        var v = mat.VendorInfo!;
+                        ImGui.SameLine();
+                        var loc = string.IsNullOrEmpty(v.ZoneName) ? v.NpcName : $"{v.NpcName}, {v.ZoneName}";
+                        ImGui.TextColored(Theme.TextSecondary, $"- {loc}");
+                        ImGui.SameLine();
+                        ImGui.TextColored(Theme.Gold, $"({v.PricePerUnit:N0} {v.CurrencyName} ea)");
+
+                        if (MapButton($"vendor{mat.ItemId}", v.HasMapCoords))
+                            OpenMapPin(v.TerritoryTypeId, v.MapId, v.MapX, v.MapY);
+                    }
+
+                    // Cost summary grouped by currency
+                    var costs = InventoryMgr.ComputeVendorCosts(vendorItems);
+                    if (costs.Count > 0)
+                    {
+                        ImGui.Spacing();
+                        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+                        ImGui.TextColored(Theme.TextSecondary, "Total:");
+
+                        foreach (KeyValuePair<string, long> kvp in costs)
+                        {
+                            ImGui.SameLine();
+                            ImGui.TextColored(Theme.Gold, $"{kvp.Value:N0} {kvp.Key}");
+
+                            // Gil sufficiency check
+                            if (kvp.Key == "Gil")
+                            {
+                                var playerGil = plugin.InventoryManager.GetGilCount();
+                                ImGui.SameLine();
+                                if (playerGil >= kvp.Value)
+                                    ImGui.TextColored(Theme.Success, "(sufficient)");
+                                else
+                                    ImGui.TextColored(Theme.Error, $"(need {kvp.Value - playerGil:N0} more)");
+                            }
+                        }
+                    }
+                }
+
+                // Non-vendor items (drops, etc.)
+                if (otherItems.Count > 0)
+                {
+                    if (vendorItems.Count > 0) ImGui.Spacing();
+                    ImGui.Spacing();
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                    ImGui.TextColored(Theme.Warning, "Drops / Other");
+                    ImGui.Spacing();
+
+                    foreach (var mat in otherItems)
+                    {
+                        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
+                        DrawGameIcon(mat.IconId, new Vector2(28, 28));
+                        ImGui.SameLine(0, Theme.PadSmall);
+                        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
+
+                        var remaining = mat.QuantityRemaining;
+                        var qtyColor = remaining == 0 ? Theme.Success : Theme.TextPrimary;
+                        ImGui.TextColored(qtyColor, $"x{mat.QuantityNeeded}");
+                        ImGui.SameLine();
+                        ImGui.Text(mat.ItemName);
+                        if (mat.QuantityOwned > 0)
+                        {
+                            ImGui.SameLine();
+                            ImGui.TextColored(remaining == 0 ? Theme.SuccessDim : Theme.TextSecondary,
+                                $"(have {mat.QuantityOwned})");
+                        }
+
+                        // Mob drop info from Garland Tools
+                        if (mat.IsMobDrop && mat.MobDrops != null && mat.MobDrops.Count > 0)
+                        {
+                            ImGui.SameLine();
+                            ImGui.TextColored(Theme.TextSecondary, "- Dropped by:");
+
+                            foreach (var mob in mat.MobDrops)
+                            {
+                                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge + 36);
+                                ImGui.TextColored(Theme.Accent, mob.MobName);
+                                if (!string.IsNullOrEmpty(mob.Level))
+                                {
+                                    ImGui.SameLine();
+                                    ImGui.TextColored(Theme.TextSecondary, $"Lv.{mob.Level}");
+                                }
+                                if (!string.IsNullOrEmpty(mob.ZoneName))
+                                {
+                                    ImGui.SameLine();
+                                    ImGui.TextColored(Theme.TextMuted, $"({mob.ZoneName})");
+                                }
+
+                                if (MapButton($"mob{mat.ItemId}_{mob.MobId}", mob.HasMapCoords))
+                                    OpenMapPin(mob.TerritoryTypeId, mob.MapId, mob.MapX, mob.MapY);
+                            }
+                        }
                     }
                 }
             }
@@ -1309,6 +1447,9 @@ public sealed class MainWindow
         ImGui.Separator();
         ImGui.Spacing();
 
+        // Vendor / Drop materials with map pins
+        DrawOtherMaterialsSection(engine);
+
         // Progress section
         DrawProgressSection(engine);
 
@@ -1389,7 +1530,13 @@ public sealed class MainWindow
 
     private void DrawWorkflowStatusCard(WorkflowEngine engine)
     {
-        Theme.BeginCard("StatusCard", 0);
+        // Estimate card height: 2 text lines + spacing/padding
+        var lineH = ImGui.GetTextLineHeightWithSpacing();
+        var lines = 1; // Target line always present
+        if (!string.IsNullOrEmpty(engine.StatusMessage)) lines++;
+        var cardHeight = lineH * lines + ImGui.GetStyle().ItemSpacing.Y * 2 + Theme.Pad;
+
+        Theme.BeginCard("StatusCard", cardHeight);
         {
             ImGui.Spacing();
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
@@ -1471,6 +1618,126 @@ public sealed class MainWindow
             ImGui.Spacing();
             DrawCraftingProgress();
             ImGui.Spacing();
+        }
+    }
+
+    /// <summary>
+    /// Draws vendor purchases and mob drop materials with map pin buttons in the Workflow tab.
+    /// Shown when there are vendor or mob drop materials in the resolved recipe.
+    /// </summary>
+    private void DrawOtherMaterialsSection(WorkflowEngine engine)
+    {
+        try
+        {
+            var resolved = engine.ResolvedRecipe;
+            if (resolved == null) return;
+
+            var otherMats = resolved.OtherMaterials;
+            if (otherMats == null || otherMats.Count == 0) return;
+
+            var vendorItems = otherMats.Where(m => m.IsVendorItem && m.VendorInfo != null).ToList();
+            var dropItems = otherMats.Where(m => !m.IsVendorItem || m.VendorInfo == null).ToList();
+
+            if (vendorItems.Count == 0 && dropItems.Count == 0) return;
+
+            ImGui.Spacing();
+
+            // Vendor purchases
+            if (vendorItems.Count > 0)
+            {
+                Theme.SectionHeader("Vendor Purchases", Theme.Gold);
+                ImGui.Spacing();
+
+                foreach (var mat in vendorItems)
+                {
+                    var v = mat.VendorInfo!;
+                    var remaining = mat.QuantityRemaining;
+
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                    DrawGameIcon(mat.IconId, new Vector2(24, 24));
+                    ImGui.SameLine(0, Theme.PadSmall);
+                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (24 - ImGui.GetTextLineHeight()) / 2);
+
+                    var qtyColor = remaining == 0 ? Theme.Success : Theme.TextPrimary;
+                    ImGui.TextColored(qtyColor, $"x{mat.QuantityNeeded}");
+                    ImGui.SameLine();
+                    ImGui.Text(mat.ItemName);
+
+                    if (mat.QuantityOwned > 0)
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextColored(remaining == 0 ? Theme.SuccessDim : Theme.TextSecondary,
+                            $"(have {mat.QuantityOwned})");
+                    }
+
+                    var loc = string.IsNullOrEmpty(v.ZoneName) ? v.NpcName : $"{v.NpcName}, {v.ZoneName}";
+                    ImGui.SameLine();
+                    ImGui.TextColored(Theme.TextSecondary, $"— {loc}");
+
+                    if (MapButton($"wfvendor{mat.ItemId}", v.HasMapCoords))
+                        OpenMapPin(v.TerritoryTypeId, v.MapId, v.MapX, v.MapY);
+                }
+                ImGui.Spacing();
+            }
+
+            // Mob drops
+            if (dropItems.Count > 0)
+            {
+                Theme.SectionHeader("Drops / Other", Theme.Warning);
+                ImGui.Spacing();
+
+                foreach (var mat in dropItems)
+                {
+                    var remaining = mat.QuantityRemaining;
+
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                    DrawGameIcon(mat.IconId, new Vector2(24, 24));
+                    ImGui.SameLine(0, Theme.PadSmall);
+                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (24 - ImGui.GetTextLineHeight()) / 2);
+
+                    var qtyColor = remaining == 0 ? Theme.Success : Theme.TextPrimary;
+                    ImGui.TextColored(qtyColor, $"x{mat.QuantityNeeded}");
+                    ImGui.SameLine();
+                    ImGui.Text(mat.ItemName);
+
+                    if (mat.QuantityOwned > 0)
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextColored(remaining == 0 ? Theme.SuccessDim : Theme.TextSecondary,
+                            $"(have {mat.QuantityOwned})");
+                    }
+
+                    if (mat.IsMobDrop && mat.MobDrops != null && mat.MobDrops.Count > 0)
+                    {
+                        foreach (var mob in mat.MobDrops)
+                        {
+                            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad + 32);
+                            ImGui.TextColored(Theme.Accent, mob.MobName);
+                            if (!string.IsNullOrEmpty(mob.Level))
+                            {
+                                ImGui.SameLine();
+                                ImGui.TextColored(Theme.TextSecondary, $"Lv.{mob.Level}");
+                            }
+                            if (!string.IsNullOrEmpty(mob.ZoneName))
+                            {
+                                ImGui.SameLine();
+                                ImGui.TextColored(Theme.TextMuted, $"({mob.ZoneName})");
+                            }
+
+                            if (MapButton($"wfmob{mat.ItemId}_{mob.MobId}", mob.HasMapCoords))
+                                OpenMapPin(mob.TerritoryTypeId, mob.MapId, mob.MapX, mob.MapY);
+                        }
+                    }
+                }
+                ImGui.Spacing();
+            }
+
+            ImGui.Separator();
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Error(ex, "DrawOtherMaterialsSection failed");
+            ImGui.TextColored(Theme.Error, $"[Error rendering materials: {ex.Message}]");
         }
     }
 
@@ -1677,6 +1944,8 @@ public sealed class MainWindow
                 color = Theme.Warning;
             else if (entry.Contains("[Health]"))
                 color = Theme.TimedNode;
+            else if (entry.Contains("[Drop]"))
+                color = Theme.Accent;
             else if (entry.Contains("[Info]") || entry.Contains("[Buff]"))
                 color = Theme.TextSecondary;
             else

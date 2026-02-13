@@ -313,7 +313,27 @@ public sealed class WorkflowEngine : IDisposable
             if (ResolvedRecipe.OtherMaterials.Count > 0)
             {
                 foreach (var mat in ResolvedRecipe.OtherMaterials)
-                    AddLog($"  [!] {mat.ItemName} x{mat.QuantityNeeded} — vendor/drop/other source.");
+                {
+                    if (mat.IsVendorItem && mat.VendorInfo != null)
+                    {
+                        var v = mat.VendorInfo;
+                        var loc = string.IsNullOrEmpty(v.ZoneName) ? "" : $" in {v.ZoneName}";
+                        AddLog($"  [Vendor] {mat.ItemName} x{mat.QuantityNeeded} — Buy from {v.NpcName}{loc} ({v.PricePerUnit:N0} {v.CurrencyName} each)");
+                    }
+                    else if (mat.IsMobDrop && mat.MobDrops != null && mat.MobDrops.Count > 0)
+                    {
+                        var topMob = mat.MobDrops[0];
+                        var zone = string.IsNullOrEmpty(topMob.ZoneName) ? "" : $" in {topMob.ZoneName}";
+                        var lvl = string.IsNullOrEmpty(topMob.Level) ? "" : $" Lv.{topMob.Level}";
+                        AddLog($"  [Drop] {mat.ItemName} x{mat.QuantityNeeded} — Dropped by {topMob.MobName}{lvl}{zone}");
+                        if (mat.MobDrops.Count > 1)
+                            AddLog($"         (+{mat.MobDrops.Count - 1} other mobs)");
+                    }
+                    else
+                    {
+                        AddLog($"  [!] {mat.ItemName} x{mat.QuantityNeeded} — other source.");
+                    }
+                }
             }
 
             resolveCompleted = true;
@@ -423,22 +443,67 @@ public sealed class WorkflowEngine : IDisposable
             if (normalSlots > 0)
                 AddLog($"  [Warning] Estimated {normalSlots} additional inventory slots needed.");
 
-            // Non-obtainable materials
+            // Non-obtainable materials — split vendor vs non-vendor
             var missingOther = ResolvedRecipe.OtherMaterials.Where(m => m.QuantityRemaining > 0).ToList();
             if (missingOther.Count > 0)
             {
-                var names = string.Join(", ", missingOther.Select(m => $"{m.ItemName} x{m.QuantityRemaining}"));
+                var vendorItems = missingOther.Where(m => m.IsVendorItem && m.VendorInfo != null).ToList();
+                var nonVendorItems = missingOther.Where(m => !m.IsVendorItem || m.VendorInfo == null).ToList();
+
+                if (vendorItems.Count > 0)
+                {
+                    foreach (var mat in vendorItems)
+                    {
+                        var v = mat.VendorInfo!;
+                        var loc = string.IsNullOrEmpty(v.ZoneName) ? "" : $" in {v.ZoneName}";
+                        AddLog($"  [Vendor] Buy {mat.ItemName} x{mat.QuantityRemaining} from {v.NpcName}{loc}");
+                    }
+
+                    var costs = Inventory.InventoryManager.ComputeVendorCosts(vendorItems);
+                    foreach (var (currency, total) in costs)
+                    {
+                        var costMsg = $"  [Vendor] Cost: {total:N0} {currency}";
+                        if (currency == "Gil")
+                        {
+                            var playerGil = inventoryManager.GetGilCount();
+                            costMsg += $" (you have {playerGil:N0})";
+                            if (playerGil < total)
+                                AddLog($"  [Warning] Insufficient gil! Need {total - playerGil:N0} more.");
+                        }
+                        AddLog(costMsg);
+                    }
+                }
+
+                if (nonVendorItems.Count > 0)
+                {
+                    foreach (var mat in nonVendorItems)
+                    {
+                        if (mat.IsMobDrop && mat.MobDrops != null && mat.MobDrops.Count > 0)
+                        {
+                            var topMob = mat.MobDrops[0];
+                            var zone = string.IsNullOrEmpty(topMob.ZoneName) ? "" : $" in {topMob.ZoneName}";
+                            var lvl = string.IsNullOrEmpty(topMob.Level) ? "" : $" Lv.{topMob.Level}";
+                            AddLog($"  [Drop] Need {mat.ItemName} x{mat.QuantityRemaining} — Kill {topMob.MobName}{lvl}{zone}");
+                        }
+                        else
+                        {
+                            AddLog($"  [!] Need {mat.ItemName} x{mat.QuantityRemaining} — other source");
+                        }
+                    }
+                }
+
+                var allNames = string.Join(", ", missingOther.Select(m => $"{m.ItemName} x{m.QuantityRemaining}"));
                 if (config.PauseOnError)
                 {
-                    AddLog($"[!] Missing non-gatherable materials: {names}");
-                    SetStatus($"Paused: Need {names}. Obtain manually and resume.");
+                    AddLog($"[!] Missing non-gatherable materials: {allNames}");
+                    SetStatus($"Paused: Need {allNames}. Obtain and resume.");
                     TransitionTo(WorkflowState.Paused);
                     inventoryCheckCompleted = true;
                     return;
                 }
                 else
                 {
-                    AddLog($"  [Warning] Missing non-gatherable materials: {names}. Proceeding anyway.");
+                    AddLog($"  [Warning] Missing non-gatherable materials: {allNames}. Proceeding anyway.");
                 }
             }
 

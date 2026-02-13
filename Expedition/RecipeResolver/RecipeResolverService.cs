@@ -13,12 +13,20 @@ public sealed class RecipeResolverService
     private readonly ExcelSheet<Recipe> recipeSheet;
     private readonly ExcelSheet<Item> itemSheet;
     private readonly ExcelSheet<GatheringItem> gatheringItemSheet;
+    private readonly VendorLookupService vendorLookup;
+    private readonly MobDropLookupService mobDropLookup;
 
     // Cache: ItemId -> list of recipes that produce it
     private readonly Dictionary<uint, List<Recipe>> recipesByItemId = new();
 
     // Cache: GatheringItem RowId -> gather type + level
     private readonly Dictionary<uint, (GatherType Type, int Level)> gatherItemInfo = new();
+
+    /// <summary>Provides vendor lookup for items.</summary>
+    public VendorLookupService VendorLookup => vendorLookup;
+
+    /// <summary>Provides mob drop lookup for items via Garland Tools.</summary>
+    public MobDropLookupService MobDropLookup => mobDropLookup;
 
     public RecipeResolverService()
     {
@@ -28,6 +36,9 @@ public sealed class RecipeResolverService
 
         BuildRecipeCache();
         BuildGatherCache();
+
+        vendorLookup = new VendorLookupService();
+        mobDropLookup = new MobDropLookupService();
     }
 
     private void BuildRecipeCache()
@@ -200,13 +211,71 @@ public sealed class RecipeResolverService
 
         ResolveRecursive(rootRecipe, quantity, gatherMap, craftOrder, otherMap, visited, inventoryLookup);
 
-        return new ResolvedRecipe
+        var resolved = new ResolvedRecipe
         {
             RootRecipe = rootRecipe,
             GatherList = gatherMap.Values.ToList(),
             CraftOrder = craftOrder,
             OtherMaterials = otherMap.Values.ToList(),
         };
+
+        // Enrich non-vendor "other" materials with mob drop data from Garland Tools
+        EnrichMobDropData(resolved.OtherMaterials);
+
+        return resolved;
+    }
+
+    /// <summary>
+    /// Pre-fetches and populates mob drop information for non-vendor materials.
+    /// Uses MobDropLookupService (Garland Tools API) with caching.
+    /// </summary>
+    private void EnrichMobDropData(List<MaterialRequirement> otherMaterials)
+    {
+        // Collect item IDs for non-vendor items that might have mob drops
+        var candidates = otherMaterials
+            .Where(m => !m.IsVendorItem || m.VendorInfo == null)
+            .ToList();
+
+        if (candidates.Count == 0) return;
+
+        // Pre-fetch all at once for concurrency
+        try
+        {
+            mobDropLookup.PreFetch(candidates.Select(m => m.ItemId));
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Warning(ex, "Failed to pre-fetch mob drop data");
+        }
+
+        // Populate each candidate
+        foreach (var mat in candidates)
+        {
+            var drops = mobDropLookup.GetMobDrops(mat.ItemId);
+            if (drops != null && drops.Count > 0)
+            {
+                mat.IsMobDrop = true;
+                mat.MobDrops = drops;
+            }
+        }
+
+        // Enrich mob coordinates from the dedicated Garland mob endpoint
+        var allMobs = candidates
+            .Where(m => m.MobDrops != null)
+            .SelectMany(m => m.MobDrops!)
+            .ToList();
+
+        if (allMobs.Count > 0)
+        {
+            try
+            {
+                mobDropLookup.EnrichMobCoords(allMobs);
+            }
+            catch (Exception ex)
+            {
+                DalamudApi.Log.Warning(ex, "Failed to enrich mob drop coordinates");
+            }
+        }
     }
 
     private void ResolveRecursive(
@@ -277,6 +346,7 @@ public sealed class RecipeResolverService
                 }
                 else
                 {
+                    var vendorInfo = vendorLookup.GetVendorInfo(ingredient.ItemId);
                     otherMap[ingredient.ItemId] = new MaterialRequirement
                     {
                         ItemId = ingredient.ItemId,
@@ -286,6 +356,8 @@ public sealed class RecipeResolverService
                         IsCraftable = false,
                         IsGatherable = false,
                         IsCollectable = false,
+                        IsVendorItem = vendorInfo != null,
+                        VendorInfo = vendorInfo,
                     };
                 }
             }

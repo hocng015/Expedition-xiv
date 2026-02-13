@@ -117,6 +117,37 @@ public sealed class InventoryManager
     }
 
     /// <summary>
+    /// Gets the player's current gil balance.
+    /// Gil is item ID 1 in the game's inventory system.
+    /// </summary>
+    public unsafe long GetGilCount()
+    {
+        var manager = InventoryManager_Game.Instance();
+        if (manager == null) return 0;
+        return manager->GetInventoryItemCount(1);
+    }
+
+    /// <summary>
+    /// Computes vendor costs grouped by currency for materials that still need to be obtained.
+    /// Returns a dictionary of CurrencyName -> total cost.
+    /// </summary>
+    public static Dictionary<string, long> ComputeVendorCosts(IEnumerable<MaterialRequirement> materials)
+    {
+        var costs = new Dictionary<string, long>();
+        foreach (var mat in materials)
+        {
+            if (!mat.IsVendorItem || mat.VendorInfo == null || mat.QuantityRemaining <= 0) continue;
+            var currency = mat.VendorInfo.CurrencyName;
+            var cost = (long)mat.VendorInfo.PricePerUnit * mat.QuantityRemaining;
+            if (costs.TryGetValue(currency, out var existing))
+                costs[currency] = existing + cost;
+            else
+                costs[currency] = cost;
+        }
+        return costs;
+    }
+
+    /// <summary>
     /// Returns the number of free inventory slots.
     /// </summary>
     public unsafe int GetFreeSlotCount()
