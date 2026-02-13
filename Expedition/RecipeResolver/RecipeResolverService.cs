@@ -37,8 +37,9 @@ public sealed class RecipeResolverService
         BuildRecipeCache();
         BuildGatherCache();
 
-        vendorLookup = new VendorLookupService();
-        mobDropLookup = new MobDropLookupService();
+        var zoneResolver = new GarlandZoneResolver();
+        vendorLookup = new VendorLookupService(zoneResolver);
+        mobDropLookup = new MobDropLookupService(zoneResolver);
     }
 
     private void BuildRecipeCache()
@@ -146,14 +147,12 @@ public sealed class RecipeResolverService
         bool collectableOnly = false,
         bool expertOnly = false,
         bool specialistOnly = false,
-        bool masterBookOnly = false,
-        int maxResults = 200)
+        bool masterBookOnly = false)
     {
         var results = new List<RecipeNode>();
 
         foreach (var recipe in recipeSheet)
         {
-            if (results.Count >= maxResults) break;
 
             var resultItem = recipe.ItemResult.Value;
             if (resultItem.RowId == 0) continue;

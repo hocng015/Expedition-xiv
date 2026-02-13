@@ -425,18 +425,29 @@ public sealed class MainWindow
     }
 
     /// <summary>
-    /// Opens the in-game map with a flag pin at the given map coordinates.
+    /// Opens the in-game map at the given location. If precise coordinates are available,
+    /// places a flag pin. Otherwise opens the map to the zone without a flag.
     /// </summary>
-    private static void OpenMapPin(uint territoryTypeId, uint mapId, float mapX, float mapY)
+    private static unsafe void OpenMapPin(uint territoryTypeId, uint mapId, float mapX, float mapY)
     {
         try
         {
-            var payload = new MapLinkPayload(territoryTypeId, mapId, mapX, mapY);
-            DalamudApi.GameGui.OpenMapWithMapLink(payload);
+            if (mapX == 0 && mapY == 0)
+            {
+                // Zone-only data — open the map centered on the zone without placing a flag.
+                var agentMap = FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentMap.Instance();
+                if (agentMap != null)
+                    agentMap->OpenMapByMapId(mapId, territoryId: territoryTypeId);
+            }
+            else
+            {
+                var payload = new MapLinkPayload(territoryTypeId, mapId, mapX, mapY);
+                DalamudApi.GameGui.OpenMapWithMapLink(payload);
+            }
         }
         catch (Exception ex)
         {
-            DalamudApi.Log.Warning(ex, $"Failed to open map pin at ({mapX:F1}, {mapY:F1})");
+            DalamudApi.Log.Warning(ex, $"Failed to open map (territory={territoryTypeId}, map={mapId}, x={mapX:F1}, y={mapY:F1})");
         }
     }
 
@@ -475,7 +486,7 @@ public sealed class MainWindow
 
         // Middle panel: Results list
         ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
-        ImGui.BeginChild("BrowseResults", new Vector2(avail.X * 0.35f, contentHeight), true);
+        ImGui.BeginChild("BrowseResults", new Vector2(avail.X * 0.45f, contentHeight), true);
         ImGui.PopStyleColor();
         DrawBrowseResults();
         ImGui.EndChild();
@@ -766,8 +777,8 @@ public sealed class MainWindow
         ImGui.TextColored(Theme.TextSecondary, $"  {browseResults.Count} recipes");
         ImGui.Separator();
 
-        var iconSm = new Vector2(28, 28);
-        var jobIconSm = new Vector2(20, 20);
+        var iconSm = new Vector2(36, 36);
+        var jobIconSm = new Vector2(24, 24);
 
         foreach (var recipe in browseResults)
         {
@@ -780,14 +791,14 @@ public sealed class MainWindow
             ImGui.SetCursorPosY(cursorY + (iconSm.Y - ImGui.GetTextLineHeight()) / 2);
 
             var label = $"{recipe.ItemName}##browse{recipe.RecipeId}";
-            if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 50, 0)))
+            if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 60, 0)))
             {
                 selectedRecipe = recipe;
                 selectedGatherItem = null;
                 PreviewResolve();
             }
 
-            ImGui.SameLine(ImGui.GetContentRegionAvail().X - 40);
+            ImGui.SameLine(ImGui.GetContentRegionAvail().X - 50);
             DrawJobIcon(recipe.CraftTypeId, jobIconSm);
             ImGui.SameLine(0, 2);
             ImGui.TextColored(Theme.TextMuted, $"{recipe.RequiredLevel}");
@@ -816,8 +827,8 @@ public sealed class MainWindow
         ImGui.TextColored(Theme.TextSecondary, $"  {browseGatherResults.Count} items");
         ImGui.Separator();
 
-        var iconSm = new Vector2(28, 28);
-        var jobIconSm = new Vector2(20, 20);
+        var iconSm = new Vector2(36, 36);
+        var jobIconSm = new Vector2(24, 24);
 
         foreach (var item in browseGatherResults)
         {
@@ -830,14 +841,14 @@ public sealed class MainWindow
             ImGui.SetCursorPosY(cursorY + (iconSm.Y - ImGui.GetTextLineHeight()) / 2);
 
             var label = $"{item.ItemName}##gather{item.ItemId}";
-            if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 50, 0)))
+            if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 60, 0)))
             {
                 selectedGatherItem = item;
                 selectedRecipe = null;
             }
 
             // Gather class icon + level on the right
-            ImGui.SameLine(ImGui.GetContentRegionAvail().X - 40);
+            ImGui.SameLine(ImGui.GetContentRegionAvail().X - 50);
             var gatherClassJobId = item.GatherClass switch
             {
                 GatherType.Miner => 16u,
@@ -893,9 +904,9 @@ public sealed class MainWindow
         // Title with item icon
         ImGui.Spacing();
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
-        DrawGameIcon(item.IconId, new Vector2(40, 40));
+        DrawGameIcon(item.IconId, new Vector2(48, 48));
         ImGui.SameLine(0, Theme.Pad);
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (40 - ImGui.GetTextLineHeight()) / 2);
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (48 - ImGui.GetTextLineHeight()) / 2);
         ImGui.TextColored(Theme.Gold, item.ItemName);
 
         // Tags row
@@ -923,7 +934,7 @@ public sealed class MainWindow
             _ => 0u,
         };
         if (gatherClassJobId > 0)
-            DrawGameIcon(62100 + gatherClassJobId, new Vector2(20, 20));
+            DrawGameIcon(62100 + gatherClassJobId, new Vector2(24, 24));
         ImGui.SameLine(0, 2);
         ImGui.TextColored(Theme.Accent, RecipeResolverService.GetGatherTypeName(item.GatherClass));
         ImGui.SameLine(0, Theme.PadLarge);
@@ -985,20 +996,20 @@ public sealed class MainWindow
                     var isSelected = selectedRecipe?.RecipeId == recipe.RecipeId;
 
                     // Item icon + name
-                    DrawGameIcon(recipe.IconId, new Vector2(28, 28));
+                    DrawGameIcon(recipe.IconId, new Vector2(36, 36));
                     ImGui.SameLine(0, Theme.PadSmall);
-                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
+                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (36 - ImGui.GetTextLineHeight()) / 2);
 
                     var label = $"{recipe.ItemName}##recipe{recipe.RecipeId}";
-                    if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 50, 0)))
+                    if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 60, 0)))
                     {
                         selectedRecipe = recipe;
                         PreviewResolve();
                     }
 
                     // Job icon + level on right
-                    ImGui.SameLine(ImGui.GetContentRegionAvail().X - 40);
-                    DrawJobIcon(recipe.CraftTypeId, new Vector2(20, 20));
+                    ImGui.SameLine(ImGui.GetContentRegionAvail().X - 50);
+                    DrawJobIcon(recipe.CraftTypeId, new Vector2(24, 24));
                     ImGui.SameLine(0, 2);
                     ImGui.TextColored(Theme.TextMuted, $"{recipe.RequiredLevel}");
 
@@ -1048,9 +1059,9 @@ public sealed class MainWindow
         // Title with item icon
         ImGui.Spacing();
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
-        DrawGameIcon(recipe.IconId, new Vector2(40, 40));
+        DrawGameIcon(recipe.IconId, new Vector2(48, 48));
         ImGui.SameLine(0, Theme.Pad);
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (40 - ImGui.GetTextLineHeight()) / 2);
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (48 - ImGui.GetTextLineHeight()) / 2);
         ImGui.TextColored(Theme.Gold, recipe.ItemName);
 
         // Tags row
@@ -1080,7 +1091,7 @@ public sealed class MainWindow
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
         ImGui.TextColored(Theme.TextSecondary, "Class:");
         ImGui.SameLine();
-        DrawJobIcon(recipe.CraftTypeId, new Vector2(20, 20));
+        DrawJobIcon(recipe.CraftTypeId, new Vector2(24, 24));
         ImGui.SameLine(0, 2);
         ImGui.TextColored(Theme.Accent, RecipeResolverService.GetCraftTypeName(recipe.CraftTypeId));
         ImGui.SameLine(0, Theme.PadLarge);
@@ -1110,9 +1121,9 @@ public sealed class MainWindow
         foreach (var ing in recipe.Ingredients)
         {
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
-            DrawGameIcon(ing.IconId, new Vector2(28, 28));
+            DrawGameIcon(ing.IconId, new Vector2(36, 36));
             ImGui.SameLine(0, Theme.PadSmall);
-            ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (36 - ImGui.GetTextLineHeight()) / 2);
             ImGui.TextColored(Theme.TextPrimary, $"x{ing.QuantityNeeded}");
             ImGui.SameLine();
             ImGui.Text(ing.ItemName);
@@ -1146,9 +1157,9 @@ public sealed class MainWindow
                 foreach (var mat in previewResolution.GatherList)
                 {
                     ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
-                    DrawGameIcon(mat.IconId, new Vector2(28, 28));
+                    DrawGameIcon(mat.IconId, new Vector2(36, 36));
                     ImGui.SameLine(0, Theme.PadSmall);
-                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
+                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (36 - ImGui.GetTextLineHeight()) / 2);
 
                     // Quantity with owned indicator
                     var remaining = mat.QuantityRemaining;
@@ -1194,14 +1205,14 @@ public sealed class MainWindow
                 foreach (var step in subRecipes)
                 {
                     ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
-                    DrawGameIcon(step.Recipe.IconId, new Vector2(28, 28));
+                    DrawGameIcon(step.Recipe.IconId, new Vector2(36, 36));
                     ImGui.SameLine(0, Theme.PadSmall);
-                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
+                    ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (36 - ImGui.GetTextLineHeight()) / 2);
                     ImGui.TextColored(Theme.TextPrimary, $"x{step.Quantity}");
                     ImGui.SameLine();
                     ImGui.Text(step.Recipe.ItemName);
                     ImGui.SameLine();
-                    DrawJobIcon(step.Recipe.CraftTypeId, new Vector2(18, 18));
+                    DrawJobIcon(step.Recipe.CraftTypeId, new Vector2(22, 22));
 
                     // Show how many the player already owns for this intermediate
                     var saddlebag = Expedition.Config.IncludeSaddlebagInScans;
@@ -1233,9 +1244,9 @@ public sealed class MainWindow
                     foreach (var mat in vendorItems)
                     {
                         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
-                        DrawGameIcon(mat.IconId, new Vector2(28, 28));
+                        DrawGameIcon(mat.IconId, new Vector2(36, 36));
                         ImGui.SameLine(0, Theme.PadSmall);
-                        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
+                        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (36 - ImGui.GetTextLineHeight()) / 2);
 
                         var remaining = mat.QuantityRemaining;
                         var qtyColor = remaining == 0 ? Theme.Success : Theme.TextPrimary;
@@ -1301,9 +1312,9 @@ public sealed class MainWindow
                     foreach (var mat in otherItems)
                     {
                         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.PadLarge);
-                        DrawGameIcon(mat.IconId, new Vector2(28, 28));
+                        DrawGameIcon(mat.IconId, new Vector2(36, 36));
                         ImGui.SameLine(0, Theme.PadSmall);
-                        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (28 - ImGui.GetTextLineHeight()) / 2);
+                        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (36 - ImGui.GetTextLineHeight()) / 2);
 
                         var remaining = mat.QuantityRemaining;
                         var qtyColor = remaining == 0 ? Theme.Success : Theme.TextPrimary;

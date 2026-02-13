@@ -33,6 +33,9 @@ public sealed class Configuration : IPluginConfiguration
     public string PreferredSolver { get; set; } = string.Empty;
     public bool CraftSubRecipesFirst { get; set; } = true;
     public int CraftQuantityBuffer { get; set; } = 0;
+    public float CraftStepDelaySeconds { get; set; } = 3.0f;
+    public bool TeleportBeforeCrafting { get; set; } = false;
+    public int TeleportDestination { get; set; } = 0; // 0=FC Estate, 1=Private Estate, 2=Apartment
 
     // --- Buff Tracking ---
     public bool WarnOnMissingFood { get; set; } = true;

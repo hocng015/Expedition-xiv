@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net.Http;
+using System.Text.Json;
 using Lumina.Excel;
 using Lumina.Excel.Sheets;
 
@@ -7,9 +9,13 @@ namespace Expedition.RecipeResolver;
 /// <summary>
 /// Builds a reverse lookup from Item ID to vendor information at startup.
 /// Covers both GilShop (standard gil vendors) and SpecialShop (tomestones, scrips, etc.).
+/// Falls back to Garland Tools NPC endpoint for vendors missing Level sheet location data.
 /// </summary>
-public sealed class VendorLookupService
+public sealed class VendorLookupService : IDisposable
 {
+    private const string GarlandNpcUrl = "https://www.garlandtools.org/db/doc/npc/en/2/{0}.json";
+    private const int RequestTimeoutMs = 5000;
+
     private readonly Dictionary<uint, VendorInfo> vendorsByItemId = new();
 
     // NPC location data: ENpcBase RowId -> (TerritoryTypeId, ZoneName, MapId, MapX, MapY)
@@ -18,8 +24,18 @@ public sealed class VendorLookupService
     // NPC names: ENpcBase RowId -> display name
     private readonly Dictionary<uint, string> npcNames = new();
 
-    public VendorLookupService()
+    private readonly HttpClient httpClient;
+    private readonly GarlandZoneResolver zoneResolver;
+
+    public VendorLookupService(GarlandZoneResolver zoneResolver)
     {
+        this.zoneResolver = zoneResolver;
+        httpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromMilliseconds(RequestTimeoutMs),
+        };
+        httpClient.DefaultRequestHeaders.Add("User-Agent", "Expedition-FFXIV-Plugin");
+
         var sw = Stopwatch.StartNew();
 
         try
@@ -149,6 +165,11 @@ public sealed class VendorLookupService
 
         // Step 5: Process SpecialShop items
         ProcessSpecialShops(itemSheet, specialShopNpcs);
+
+        // Step 6: Enrich vendors missing map coordinates via Garland Tools NPC endpoint.
+        // Some vendor NPCs don't have Type=8 entries in the Level sheet (e.g. instanced NPCs,
+        // housing district vendors). The Garland Tools NPC endpoint provides their coordinates.
+        EnrichMissingVendorLocations();
     }
 
     private void ProcessGilShops(
@@ -327,5 +348,127 @@ public sealed class VendorLookupService
     {
         var scale = sizeFactor / 100.0f;
         return 41.0f / scale * ((worldCoord + offset * scale + 1024.0f) / 2048.0f) + 1.0f;
+    }
+
+    /// <summary>
+    /// Enriches vendor entries that are missing map coordinates by fetching NPC location data
+    /// from the Garland Tools NPC endpoint. Only fetches for NPCs not found in the Level sheet.
+    /// </summary>
+    private void EnrichMissingVendorLocations()
+    {
+        // Identify unique NPC IDs that lack coordinates
+        var npcIdsToEnrich = vendorsByItemId.Values
+            .Where(v => !v.HasMapCoords && v.NpcId > 0)
+            .Select(v => v.NpcId)
+            .Distinct()
+            .ToList();
+
+        if (npcIdsToEnrich.Count == 0) return;
+
+        DalamudApi.Log.Information($"Enriching {npcIdsToEnrich.Count} vendor NPCs with missing coordinates via Garland Tools...");
+
+        // Fetch NPC data concurrently
+        var npcLocationResults = new Dictionary<uint, (string ZoneName, uint TerritoryTypeId, uint MapId, float MapX, float MapY)>();
+
+        try
+        {
+            var tasks = npcIdsToEnrich.Select(async npcId =>
+            {
+                var result = await FetchNpcLocationAsync(npcId);
+                return (npcId, result);
+            }).ToArray();
+
+            var results = Task.WhenAll(tasks).GetAwaiter().GetResult();
+
+            foreach (var (npcId, result) in results)
+            {
+                if (result.HasValue)
+                    npcLocationResults[npcId] = result.Value;
+            }
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Warning(ex, "Failed to enrich vendor NPC locations from Garland Tools");
+            return;
+        }
+
+        if (npcLocationResults.Count == 0) return;
+
+        // Replace VendorInfo entries for items whose NPC was enriched.
+        // Since VendorInfo uses init-only properties, we create new instances.
+        var enrichedCount = 0;
+        foreach (var (itemId, vendor) in vendorsByItemId.ToList())
+        {
+            if (vendor.HasMapCoords) continue;
+            if (!npcLocationResults.TryGetValue(vendor.NpcId, out var loc)) continue;
+
+            vendorsByItemId[itemId] = new VendorInfo
+            {
+                NpcName = vendor.NpcName,
+                ZoneName = loc.ZoneName,
+                PricePerUnit = vendor.PricePerUnit,
+                CurrencyName = vendor.CurrencyName,
+                CurrencyItemId = vendor.CurrencyItemId,
+                IsGilShop = vendor.IsGilShop,
+                NpcId = vendor.NpcId,
+                TerritoryTypeId = loc.TerritoryTypeId,
+                MapId = loc.MapId,
+                MapX = loc.MapX,
+                MapY = loc.MapY,
+            };
+            enrichedCount++;
+        }
+
+        DalamudApi.Log.Information(
+            $"Enriched {enrichedCount} vendor entries with Garland NPC coordinates " +
+            $"({npcLocationResults.Count}/{npcIdsToEnrich.Count} NPCs resolved).");
+    }
+
+    /// <summary>
+    /// Fetches NPC location data from the Garland Tools NPC endpoint.
+    /// Returns zone name, territory/map IDs, and map coordinates, or null if unavailable.
+    /// </summary>
+    private async Task<(string ZoneName, uint TerritoryTypeId, uint MapId, float MapX, float MapY)?> FetchNpcLocationAsync(uint npcId)
+    {
+        try
+        {
+            var url = string.Format(GarlandNpcUrl, npcId);
+            var response = await httpClient.GetAsync(url);
+            if (!response.IsSuccessStatusCode) return null;
+
+            var json = await response.Content.ReadAsStringAsync();
+            if (json.Length > 65536) return null;
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("npc", out var npc)) return null;
+
+            // coords is [mapX, mapY], already in map-coordinate space
+            if (!npc.TryGetProperty("coords", out var coords)) return null;
+            if (coords.ValueKind != JsonValueKind.Array || coords.GetArrayLength() < 2) return null;
+
+            var mapX = coords[0].GetSingle();
+            var mapY = coords[1].GetSingle();
+
+            // zoneid is a PlaceName RowId (same as Garland Tools uses for mobs)
+            if (!npc.TryGetProperty("zoneid", out var zoneIdElem)) return null;
+            var garlandZoneId = zoneIdElem.GetInt32();
+
+            var zoneName = zoneResolver.GetZoneName(garlandZoneId);
+            var terrInfo = zoneResolver.GetTerritoryInfo(garlandZoneId);
+            if (terrInfo == null) return null;
+
+            return (zoneName, terrInfo.Value.TerritoryTypeId, terrInfo.Value.MapId, mapX, mapY);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public void Dispose()
+    {
+        httpClient.Dispose();
     }
 }

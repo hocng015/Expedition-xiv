@@ -233,6 +233,43 @@ public static class SettingsTab
         }
         Theme.HelpMarker("Craft this many extra of each sub-recipe as a safety margin.");
 
+        var stepDelay = config.CraftStepDelaySeconds;
+        ImGui.SetNextItemWidth(150);
+        if (ImGui.SliderFloat("Delay between craft steps (s)", ref stepDelay, 1.0f, 15.0f, "%.1f"))
+        {
+            config.CraftStepDelaySeconds = stepDelay;
+            config.Save();
+        }
+        Theme.HelpMarker("Seconds to wait between each craft step and before retries. " +
+                          "Increase this if Artisan fails with 'Unable to execute command' errors. " +
+                          "Default: 3.0s.");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        var teleportEnabled = config.TeleportBeforeCrafting;
+        if (ImGui.Checkbox("Teleport to estate before crafting", ref teleportEnabled))
+        {
+            config.TeleportBeforeCrafting = teleportEnabled;
+            config.Save();
+        }
+        Theme.HelpMarker("After gathering completes, teleport to your estate/apartment before starting the craft phase. " +
+                          "Requires the Lifestream plugin to be installed.");
+
+        if (teleportEnabled)
+        {
+            ImGui.SetNextItemWidth(200);
+            var dest = config.TeleportDestination;
+            var destOptions = new[] { "FC Estate", "Private Estate", "Apartment" };
+            if (ImGui.Combo("Destination", ref dest, destOptions, destOptions.Length))
+            {
+                config.TeleportDestination = dest;
+                config.Save();
+            }
+            Theme.HelpMarker("Where to teleport before crafting begins.");
+        }
+
         EndSection();
     }
 

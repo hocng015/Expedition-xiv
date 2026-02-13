@@ -30,6 +30,6 @@ public sealed class MobDropInfo
     /// <summary>Y coordinate in map-coordinate space (populated from mob endpoint).</summary>
     public float MapY { get; set; }
 
-    /// <summary>True if map coordinates are available for showing a map pin.</summary>
-    public bool HasMapCoords => MapId != 0 && TerritoryTypeId != 0 && (MapX != 0 || MapY != 0);
+    /// <summary>True if enough data is available to open the map (zone + optional precise pin).</summary>
+    public bool HasMapCoords => MapId != 0 && TerritoryTypeId != 0;
 }

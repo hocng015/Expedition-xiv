@@ -213,16 +213,25 @@ public sealed class OverlayWindow
         ImGui.Spacing();
     }
 
-    private static void OpenMapPin(uint territoryTypeId, uint mapId, float mapX, float mapY)
+    private static unsafe void OpenMapPin(uint territoryTypeId, uint mapId, float mapX, float mapY)
     {
         try
         {
-            var payload = new MapLinkPayload(territoryTypeId, mapId, mapX, mapY);
-            DalamudApi.GameGui.OpenMapWithMapLink(payload);
+            if (mapX == 0 && mapY == 0)
+            {
+                var agentMap = FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentMap.Instance();
+                if (agentMap != null)
+                    agentMap->OpenMapByMapId(mapId, territoryId: territoryTypeId);
+            }
+            else
+            {
+                var payload = new MapLinkPayload(territoryTypeId, mapId, mapX, mapY);
+                DalamudApi.GameGui.OpenMapWithMapLink(payload);
+            }
         }
         catch (Exception ex)
         {
-            DalamudApi.Log.Warning(ex, $"Failed to open map pin at ({mapX:F1}, {mapY:F1})");
+            DalamudApi.Log.Warning(ex, $"Failed to open map (territory={territoryTypeId}, map={mapId}, x={mapX:F1}, y={mapY:F1})");
         }
     }
 

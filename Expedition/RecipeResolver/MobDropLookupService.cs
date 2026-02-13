@@ -16,23 +16,16 @@ public sealed class MobDropLookupService : IDisposable
 
     private readonly HttpClient httpClient;
     private readonly Dictionary<uint, List<MobDropInfo>?> cache = new();
+    private readonly GarlandZoneResolver zoneResolver;
 
-    // Zone ID -> zone name mapping from Garland Tools (populated as we encounter zones)
-    private readonly Dictionary<int, string> zoneNameCache = new();
-
-    // PlaceName RowId -> (TerritoryTypeId, MapId) for resolving Garland zone IDs to map data
-    private readonly Dictionary<int, (uint TerritoryTypeId, uint MapId)> zoneToTerritoryMap = new();
-
-    public MobDropLookupService()
+    public MobDropLookupService(GarlandZoneResolver zoneResolver)
     {
+        this.zoneResolver = zoneResolver;
         httpClient = new HttpClient
         {
             Timeout = TimeSpan.FromMilliseconds(RequestTimeoutMs),
         };
         httpClient.DefaultRequestHeaders.Add("User-Agent", "Expedition-FFXIV-Plugin");
-
-        BuildZoneNameCache();
-        BuildZoneToTerritoryMap();
     }
 
     /// <summary>
@@ -182,14 +175,14 @@ public sealed class MobDropLookupService : IDisposable
                 var zoneId = z.ValueKind == JsonValueKind.Number ? z.GetInt32() : 0;
                 if (zoneId > 0)
                 {
-                    zoneNameCache.TryGetValue(zoneId, out zoneName);
-                    if (zoneToTerritoryMap.TryGetValue(zoneId, out var terrInfo))
+                    zoneName = zoneResolver.GetZoneName(zoneId);
+                    var terrInfo = zoneResolver.GetTerritoryInfo(zoneId);
+                    if (terrInfo != null)
                     {
-                        territoryTypeId = terrInfo.TerritoryTypeId;
-                        mapId = terrInfo.MapId;
+                        territoryTypeId = terrInfo.Value.TerritoryTypeId;
+                        mapId = terrInfo.Value.MapId;
                     }
                 }
-                zoneName ??= "";
             }
 
             mobs.Add(new MobDropInfo
@@ -229,63 +222,12 @@ public sealed class MobDropLookupService : IDisposable
     }
 
     /// <summary>
-    /// Builds a zone name cache from Lumina's PlaceName sheet.
-    /// Garland Tools zone IDs map to PlaceName row IDs.
-    /// </summary>
-    private void BuildZoneNameCache()
-    {
-        try
-        {
-            var placeNameSheet = DalamudApi.DataManager.GetExcelSheet<Lumina.Excel.Sheets.PlaceName>();
-            if (placeNameSheet == null) return;
-
-            foreach (var place in placeNameSheet)
-            {
-                var name = place.Name.ExtractText();
-                if (!string.IsNullOrEmpty(name))
-                    zoneNameCache[(int)place.RowId] = name;
-            }
-        }
-        catch (Exception ex)
-        {
-            DalamudApi.Log.Warning(ex, "Failed to build zone name cache for mob drops");
-        }
-    }
-
-    /// <summary>
-    /// Builds a reverse mapping from PlaceName RowId (Garland zone ID) to TerritoryType/Map data.
-    /// Needed for constructing MapLinkPayload from Garland's zone IDs.
-    /// </summary>
-    private void BuildZoneToTerritoryMap()
-    {
-        try
-        {
-            var territorySheet = DalamudApi.DataManager.GetExcelSheet<Lumina.Excel.Sheets.TerritoryType>();
-            if (territorySheet == null) return;
-
-            foreach (var territory in territorySheet)
-            {
-                var placeNameId = territory.PlaceName.RowId;
-                if (placeNameId == 0) continue;
-
-                // Prefer the first match (main overworld territory for that zone name)
-                if (!zoneToTerritoryMap.ContainsKey((int)placeNameId))
-                    zoneToTerritoryMap[(int)placeNameId] = (territory.RowId, territory.Map.RowId);
-            }
-        }
-        catch (Exception ex)
-        {
-            DalamudApi.Log.Warning(ex, "Failed to build zone-to-territory map for mob drops");
-        }
-    }
-
-    /// <summary>
     /// Fetches and populates map coordinates for mob drops from the Garland Tools mob detail endpoint.
     /// Mob coords from Garland are already in map-coordinate format — no conversion needed.
     /// </summary>
     public void EnrichMobCoords(List<MobDropInfo> mobs)
     {
-        var toFetch = mobs.Where(m => m.MobId > 0 && !m.HasMapCoords).ToList();
+        var toFetch = mobs.Where(m => m.MobId > 0 && m.MapX == 0 && m.MapY == 0).ToList();
         if (toFetch.Count == 0) return;
 
         try

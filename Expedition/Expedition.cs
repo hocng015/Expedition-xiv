@@ -98,6 +98,7 @@ public sealed class Expedition : IDalamudPlugin
 
         WorkflowEngine.Dispose();
         RecipeResolver.MobDropLookup.Dispose();
+        RecipeResolver.VendorLookup.Dispose();
         Ipc.Dispose();
 
         DalamudApi.Log.Information("Expedition unloaded.");

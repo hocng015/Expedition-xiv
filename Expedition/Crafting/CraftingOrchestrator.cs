@@ -17,17 +17,33 @@ public sealed class CraftingOrchestrator
     private int inventoryCountBeforeCraft;
     private Inventory.InventoryManager? cachedInventoryManager;
 
-    /// <summary>Maximum number of retry attempts per task when Artisan fails to craft.</summary>
-    private const int MaxRetries = 2;
+    /// <summary>Maximum retry attempts per task. Reads from user config (default 3).</summary>
+    private static int MaxRetries => Expedition.Config.MaxRetryPerTask;
 
     /// <summary>
     /// Grace period (seconds) after calling CraftItem before we start checking GetIsBusy().
     /// Artisan needs time to: switch class → open crafting log → select recipe → begin craft.
     /// </summary>
-    private const double StartupGraceSeconds = 5.0;
+    private const double StartupGraceSeconds = 8.0;
 
-    /// <summary>Delay (seconds) between tasks or before retries.</summary>
-    private const double InterTaskDelaySeconds = 3.0;
+    /// <summary>
+    /// Maximum time (seconds) to wait for Artisan to report busy after the grace period.
+    /// If Artisan never reports busy within this window, we assume the craft command was lost.
+    /// </summary>
+    private const double BusyConfirmationTimeoutSeconds = 15.0;
+
+    /// <summary>
+    /// Maximum time (seconds) to wait for Artisan to become idle before sending a new CraftItem.
+    /// Artisan may still be wrapping up the previous craft (closing craft log, animations, etc.)
+    /// even after we've detected completion via inventory delta.
+    /// </summary>
+    private const double PreSendBusyWaitTimeoutSeconds = 30.0;
+
+    /// <summary>Delay (seconds) between tasks. Reads from user config.</summary>
+    private static double InterTaskDelaySeconds => Expedition.Config.CraftStepDelaySeconds;
+
+    /// <summary>Delay multiplier for retries (retries use 2x the inter-task delay for recovery).</summary>
+    private const double RetryDelayMultiplier = 2.0;
 
     /// <summary>When the current CraftItem command was sent to Artisan.</summary>
     private DateTime craftItemSentTime = DateTime.MinValue;
@@ -37,6 +53,21 @@ public sealed class CraftingOrchestrator
 
     /// <summary>If true, a retry is pending after the delay expires.</summary>
     private bool pendingRetry;
+
+    /// <summary>
+    /// If true, we're waiting for Artisan to report not-busy before sending the next CraftItem.
+    /// This prevents sending commands while Artisan is still wrapping up the previous craft.
+    /// </summary>
+    private bool waitingForArtisanIdle;
+
+    /// <summary>When we started waiting for Artisan to become idle (for timeout).</summary>
+    private DateTime artisanIdleWaitStart = DateTime.MinValue;
+
+    /// <summary>
+    /// Whether Artisan has reported busy at least once since the last CraftItem command.
+    /// This prevents false "finished" detection if Artisan briefly reports not-busy during startup.
+    /// </summary>
+    private bool artisanEverReportedBusy;
 
     public CraftingOrchestratorState State { get; private set; } = CraftingOrchestratorState.Idle;
     public IReadOnlyList<CraftingTask> Tasks => taskQueue;
@@ -83,6 +114,9 @@ public sealed class CraftingOrchestrator
             return;
         }
 
+        // Clear any lingering Artisan stop request from a previous workflow
+        ipc.Artisan.SetStopRequest(false);
+
         State = CraftingOrchestratorState.Running;
         currentTaskIndex = 0;
         StartCurrentTask();
@@ -100,6 +134,8 @@ public sealed class CraftingOrchestrator
 
         State = CraftingOrchestratorState.Idle;
         waitingForArtisanToFinish = false;
+        artisanEverReportedBusy = false;
+        waitingForArtisanIdle = false;
         delayUntil = null;
         pendingRetry = false;
         StatusMessage = "Crafting stopped.";
@@ -118,11 +154,66 @@ public sealed class CraftingOrchestrator
         if ((DateTime.Now - lastPollTime).TotalMilliseconds < 1000) return;
         lastPollTime = DateTime.Now;
 
+        // If we're waiting for Artisan to become idle before sending the next command
+        if (waitingForArtisanIdle)
+        {
+            var artisanBusy = ipc.Artisan.GetIsBusy();
+            if (artisanBusy)
+            {
+                var waitElapsed = (DateTime.Now - artisanIdleWaitStart).TotalSeconds;
+                if (waitElapsed > PreSendBusyWaitTimeoutSeconds)
+                {
+                    DalamudApi.Log.Warning(
+                        $"Artisan still busy after {waitElapsed:F0}s idle-wait timeout. Proceeding anyway.");
+                    waitingForArtisanIdle = false;
+                    // Fall through to dispatch below
+                }
+                else
+                {
+                    StatusMessage = $"Waiting for Artisan to finish previous craft... ({waitElapsed:F0}s)";
+                    return;
+                }
+            }
+            else
+            {
+                var waitElapsed = (DateTime.Now - artisanIdleWaitStart).TotalSeconds;
+                DalamudApi.Log.Information($"Artisan is now idle after {waitElapsed:F1}s wait. Dispatching next command.");
+                waitingForArtisanIdle = false;
+                // Fall through to dispatch below
+            }
+
+            // Dispatch the pending action
+            if (pendingStartNext)
+            {
+                pendingStartNext = false;
+                StartCurrentTask();
+            }
+            else if (pendingRetry)
+            {
+                pendingRetry = false;
+                var task = CurrentTask;
+                if (task != null)
+                    SendCraftCommand(task, task.QuantityRemaining);
+            }
+            return;
+        }
+
         // If we're in a delay (inter-task or retry), wait it out
         if (delayUntil.HasValue)
         {
             if (DateTime.Now < delayUntil.Value) return;
             delayUntil = null;
+
+            // Delay expired — before dispatching, ensure Artisan is idle.
+            // Artisan may still be wrapping up the previous craft even after inventory delta confirmed completion.
+            if (ipc.Artisan.GetIsBusy())
+            {
+                DalamudApi.Log.Information(
+                    "Inter-task delay expired but Artisan is still busy. Waiting for idle before sending next command.");
+                waitingForArtisanIdle = true;
+                artisanIdleWaitStart = DateTime.Now;
+                return;
+            }
 
             if (pendingStartNext)
             {
@@ -150,17 +241,49 @@ public sealed class CraftingOrchestrator
 
         if (waitingForArtisanToFinish)
         {
-            // Enforce startup grace period — don't check busy state too early
             var elapsed = (DateTime.Now - craftItemSentTime).TotalSeconds;
+            var artisanBusy = ipc.Artisan.GetIsBusy();
+
+            // Phase 1: Startup grace period — don't act on busy state too early
             if (elapsed < StartupGraceSeconds)
             {
+                // Track if Artisan has acknowledged the craft during the grace period
+                if (artisanBusy) artisanEverReportedBusy = true;
                 StatusMessage = $"Waiting for Artisan to start {currentTask.ItemName}... ({elapsed:F0}s)";
                 return;
             }
 
-            // Check if Artisan has finished
-            if (!ipc.Artisan.GetIsBusy())
+            // Phase 2: After grace period, wait for Artisan to report busy at least once.
+            // This prevents false "finished" detection if Artisan briefly reports not-busy
+            // during class switching or recipe selection.
+            if (!artisanEverReportedBusy)
             {
+                if (artisanBusy)
+                {
+                    // Artisan is now busy — we can start watching for completion
+                    artisanEverReportedBusy = true;
+                    DalamudApi.Log.Information($"Artisan confirmed busy for {currentTask.ItemName} at {elapsed:F1}s");
+                }
+                else if (elapsed > StartupGraceSeconds + BusyConfirmationTimeoutSeconds)
+                {
+                    // Artisan never reported busy — the CraftItem command was likely lost
+                    DalamudApi.Log.Warning(
+                        $"Artisan never reported busy for {currentTask.ItemName} after {elapsed:F1}s. " +
+                        "Treating as failed attempt (craft command may have been lost).");
+                    waitingForArtisanToFinish = false;
+                    HandleArtisanFinished(currentTask, inventoryManager);
+                }
+                else
+                {
+                    StatusMessage = $"Waiting for Artisan to acknowledge {currentTask.ItemName}... ({elapsed:F0}s)";
+                }
+                return;
+            }
+
+            // Phase 3: Artisan was busy and is now not busy — craft attempt has finished
+            if (!artisanBusy)
+            {
+                DalamudApi.Log.Information($"Artisan finished for {currentTask.ItemName} at {elapsed:F1}s");
                 waitingForArtisanToFinish = false;
                 HandleArtisanFinished(currentTask, inventoryManager);
             }
@@ -222,16 +345,17 @@ public sealed class CraftingOrchestrator
         {
             // Artisan stopped but nothing was crafted — likely missing ingredients or class issue
             task.RetryCount++;
+            var retryDelay = InterTaskDelaySeconds * RetryDelayMultiplier;
             if (task.RetryCount <= MaxRetries)
             {
                 DalamudApi.Log.Warning(
                     $"Craft task {task.ItemName} produced 0 items (attempt {task.RetryCount}/{MaxRetries}). " +
-                    $"Retrying in {InterTaskDelaySeconds}s...");
+                    $"Retrying in {retryDelay:F1}s... (busyEverSeen={artisanEverReportedBusy})");
                 StatusMessage = $"Retrying {task.ItemName} (attempt {task.RetryCount}/{MaxRetries})...";
 
-                // Schedule retry via delay (no Task.Run — stays on framework thread)
+                // Schedule retry with longer delay to give Artisan time to recover
                 pendingRetry = true;
-                delayUntil = DateTime.Now.AddSeconds(InterTaskDelaySeconds);
+                delayUntil = DateTime.Now.AddSeconds(retryDelay);
             }
             else
             {
@@ -247,15 +371,16 @@ public sealed class CraftingOrchestrator
         {
             // Partial completion — some items crafted but not enough. Retry remainder.
             task.RetryCount++;
+            var retryDelay = InterTaskDelaySeconds * RetryDelayMultiplier;
             if (task.RetryCount <= MaxRetries)
             {
                 DalamudApi.Log.Warning(
                     $"Craft task {task.ItemName}: crafted {task.QuantityCrafted}/{task.Quantity}. " +
-                    $"Retrying remaining {task.QuantityRemaining} (attempt {task.RetryCount}/{MaxRetries})...");
+                    $"Retrying remaining {task.QuantityRemaining} (attempt {task.RetryCount}/{MaxRetries}) in {retryDelay:F1}s...");
                 StatusMessage = $"Crafting {task.ItemName} {task.QuantityCrafted}/{task.Quantity}, retrying...";
 
                 pendingRetry = true;
-                delayUntil = DateTime.Now.AddSeconds(InterTaskDelaySeconds);
+                delayUntil = DateTime.Now.AddSeconds(retryDelay);
             }
             else
             {
@@ -279,11 +404,38 @@ public sealed class CraftingOrchestrator
         else
             inventoryCountBeforeCraft = 0;
 
+        // Reset busy tracking — must see Artisan report busy before treating not-busy as completion
+        artisanEverReportedBusy = false;
+
+        // Log Artisan state before sending command for diagnostics
+        var artisanBusy = ipc.Artisan.GetIsBusy();
+        var artisanEndurance = ipc.Artisan.GetEnduranceStatus();
+        var artisanStopReq = ipc.Artisan.GetStopRequest();
+        if (artisanBusy)
+        {
+            DalamudApi.Log.Warning(
+                $"Artisan is STILL BUSY when sending CraftItem for {task.ItemName}! " +
+                "Command may be silently dropped. This should not happen — the idle-wait gate should have prevented this.");
+        }
+        DalamudApi.Log.Information(
+            $"Artisan state before CraftItem: busy={artisanBusy}, endurance={artisanEndurance}, " +
+            $"stopRequest={artisanStopReq}");
+
+        // Clear any lingering stop request from a previous task or workflow —
+        // Artisan may silently ignore CraftItem if a stop was previously requested.
+        if (artisanStopReq)
+        {
+            ipc.Artisan.SetStopRequest(false);
+            DalamudApi.Log.Information("Cleared Artisan stop request before sending new CraftItem.");
+        }
+
         ipc.Artisan.CraftItem((ushort)task.RecipeId, quantity);
         craftItemSentTime = DateTime.Now;
         waitingForArtisanToFinish = true;
 
-        DalamudApi.Log.Information($"Sent CraftItem to Artisan: {task.ItemName} x{quantity} (inventory baseline={inventoryCountBeforeCraft})");
+        DalamudApi.Log.Information(
+            $"Sent CraftItem to Artisan: {task.ItemName} x{quantity} (recipeId={task.RecipeId}) " +
+            $"(inventory baseline={inventoryCountBeforeCraft}, retries so far={task.RetryCount}/{MaxRetries})");
     }
 
     private void StartCurrentTask()

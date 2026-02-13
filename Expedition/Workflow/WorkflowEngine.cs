@@ -71,6 +71,11 @@ public sealed class WorkflowEngine : IDisposable
     private bool gatherPrepCompleted;
     private bool craftPrepCompleted;
 
+    // Pre-craft teleport state
+    private bool teleportCommandSent;
+    private DateTime teleportSentTime;
+    private const double TeleportTimeoutSeconds = 30.0;
+
     public event Action<WorkflowState>? OnStateChanged;
     public event Action<string>? OnStatusChanged;
     public event Action? OnCompleted;
@@ -646,9 +651,129 @@ public sealed class WorkflowEngine : IDisposable
         }
     }
 
+    /// <summary>Post-teleport settle delay before starting crafting.</summary>
+    private const double PostTeleportSettleSeconds = 3.0;
+
+    /// <summary>Tracks whether the teleport has fully completed (arrived + settled).</summary>
+    private bool teleportArrived;
+
     private void ExecutePreparingCraft()
     {
         CurrentPhase = WorkflowPhase.Crafting;
+        var cond = DalamudApi.Condition;
+
+        // --- Phase 0: Wait for player to be free (not mid-flight, not between areas, not occupied) ---
+        // This is crucial: after gathering, the player may still be in flight/transit.
+        // We must wait for ALL movement/teleporting to finish before sending teleport or craft commands.
+        var isBusy = cond[ConditionFlag.BetweenAreas]
+                  || cond[ConditionFlag.BetweenAreas51]
+                  || cond[ConditionFlag.Casting]
+                  || cond[ConditionFlag.Jumping]
+                  || cond[ConditionFlag.InFlight]
+                  || cond[ConditionFlag.Diving]
+                  || cond[ConditionFlag.Mounted];
+
+        if (!teleportCommandSent && isBusy)
+        {
+            SetStatus("Waiting for player to finish travelling before starting crafting prep...");
+            return; // Retry next frame
+        }
+
+        // --- Phase 1: Pre-craft teleport (if enabled) ---
+        if (config.TeleportBeforeCrafting && !teleportCommandSent)
+        {
+            var destName = config.TeleportDestination switch
+            {
+                1 => "Private Estate",
+                2 => "Apartment",
+                _ => "FC Estate",
+            };
+
+            var lifeStreamCmd = config.TeleportDestination switch
+            {
+                1 => "/li home",
+                2 => "/li apartment",
+                _ => "/li fc",
+            };
+
+            SetStatus($"Teleporting to {destName}...");
+            AddLog($"Teleporting to {destName} before crafting...");
+
+            try
+            {
+                IPC.ChatIpc.SendCommand(lifeStreamCmd);
+            }
+            catch (Exception ex)
+            {
+                AddLog($"[Warning] Teleport command failed: {ex.Message}. Proceeding without teleport.");
+                teleportCommandSent = true;
+                teleportArrived = true;
+                return;
+            }
+
+            teleportCommandSent = true;
+            teleportArrived = false;
+            teleportSentTime = DateTime.Now;
+            return; // Wait for next frame to check arrival
+        }
+
+        // --- Phase 2: Wait for teleport to finish ---
+        if (config.TeleportBeforeCrafting && teleportCommandSent && !teleportArrived)
+        {
+            var isTeleporting = cond[ConditionFlag.BetweenAreas]
+                             || cond[ConditionFlag.BetweenAreas51]
+                             || cond[ConditionFlag.Occupied]
+                             || cond[ConditionFlag.Casting];
+
+            var elapsed = (DateTime.Now - teleportSentTime).TotalSeconds;
+
+            if (isTeleporting)
+            {
+                SetStatus($"Teleporting... ({elapsed:F0}s)");
+                return; // Still in transit
+            }
+
+            // Give Lifestream a few seconds to initiate the teleport before concluding it's done
+            if (elapsed < 5.0)
+            {
+                SetStatus($"Waiting for teleport to initiate... ({elapsed:F0}s)");
+                return;
+            }
+
+            if (elapsed > TeleportTimeoutSeconds)
+            {
+                AddLog("[Warning] Teleport timed out. Proceeding with crafting at current location.");
+            }
+            else
+            {
+                AddLog("Arrived at destination.");
+            }
+
+            teleportArrived = true;
+            // Add a brief settle delay so the game fully loads the zone
+            teleportSentTime = DateTime.Now; // reuse for settle timer
+            return;
+        }
+
+        // --- Phase 2b: Post-teleport settle delay ---
+        if (config.TeleportBeforeCrafting && teleportArrived && !craftPrepCompleted)
+        {
+            var settleElapsed = (DateTime.Now - teleportSentTime).TotalSeconds;
+            if (settleElapsed < PostTeleportSettleSeconds)
+            {
+                SetStatus($"Settling after teleport... ({settleElapsed:F0}s)");
+                return;
+            }
+        }
+
+        // --- Phase 3: Wait for any remaining player occupation before starting Artisan ---
+        if (IsPlayerOccupied())
+        {
+            SetStatus("Waiting for player to be ready before starting crafting...");
+            return;
+        }
+
+        // --- Phase 4: Start crafting ---
         SetStatus("Preparing crafting queue...");
 
         try
@@ -818,6 +943,8 @@ public sealed class WorkflowEngine : IDisposable
         inventoryCheckCompleted = false;
         gatherPrepCompleted = false;
         craftPrepCompleted = false;
+        teleportCommandSent = false;
+        teleportArrived = false;
     }
 
     public void Dispose()

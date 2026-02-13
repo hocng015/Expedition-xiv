@@ -57,6 +57,18 @@ public sealed class GatheringOrchestrator
     private int gbrIdlePolls;
 
     /// <summary>
+    /// Tracks consecutive times we've re-enabled AutoGather only for GBR to immediately disable itself again.
+    /// If this exceeds a threshold, GBR's internal state is likely corrupted and we need a full reset cycle.
+    /// </summary>
+    private int consecutiveReEnableFailures;
+
+    /// <summary>
+    /// After this many consecutive re-enable failures, perform a full GBR reset cycle
+    /// (disable AutoGather, wait, then re-inject list and restart).
+    /// </summary>
+    private const int MaxReEnableFailuresBeforeReset = 3;
+
+    /// <summary>
     /// When non-null, the task quantity has been met but we're waiting for the player
     /// to finish mining/harvesting the current node before advancing.
     /// </summary>
@@ -244,6 +256,7 @@ public sealed class GatheringOrchestrator
         if (!gbrEnabled)
         {
             gbrIdlePolls++;
+            consecutiveReEnableFailures++;
 
             // Don't try to re-enable while the player is in a blocking state (crafting, cutscene, etc.)
             if (playerOccupied)
@@ -258,8 +271,35 @@ public sealed class GatheringOrchestrator
             {
                 lastAutoGatherCheck = DateTime.Now;
 
-                // Re-send gather command and re-enable AutoGather
-                DalamudApi.Log.Information($"GBR AutoGather is OFF — re-enabling for {task.ItemName} (need {task.QuantityRemaining} more)");
+                // If GBR keeps disabling itself immediately after re-enable, its internal state
+                // is likely corrupted (e.g. stale TaskManager tasks from a Dalamud plugin reload).
+                // Perform a full reset cycle: disable, re-inject the gather list, then re-enable.
+                if (consecutiveReEnableFailures > MaxReEnableFailuresBeforeReset)
+                {
+                    DalamudApi.Log.Warning(
+                        $"GBR AutoGather has failed {consecutiveReEnableFailures} consecutive re-enables for {task.ItemName}. " +
+                        "Performing full reset cycle (disable → re-inject list → re-enable).");
+
+                    // Full disable to clear any stale GBR state
+                    ipc.GatherBuddy.SetAutoGatherEnabled(false);
+
+                    // Re-inject the gather list from scratch
+                    CleanupGatherList();
+                    InjectGatherList();
+
+                    // Re-send the gather command and re-enable
+                    SendGatherCommand(task);
+                    ipc.GatherBuddy.SetAutoGatherEnabled(true);
+
+                    // Reset the counter — give the fresh cycle a chance
+                    consecutiveReEnableFailures = 0;
+                    return;
+                }
+
+                // Normal re-enable attempt
+                DalamudApi.Log.Information(
+                    $"GBR AutoGather is OFF — re-enabling for {task.ItemName} " +
+                    $"(need {task.QuantityRemaining} more, re-enable attempt {consecutiveReEnableFailures}/{MaxReEnableFailuresBeforeReset})");
                 SendGatherCommand(task);
                 ipc.GatherBuddy.SetAutoGatherEnabled(true);
             }
@@ -267,6 +307,12 @@ public sealed class GatheringOrchestrator
         else
         {
             gbrIdlePolls = 0;
+            // GBR is enabled and running — reset the failure counter
+            if (consecutiveReEnableFailures > 0)
+            {
+                DalamudApi.Log.Information($"GBR AutoGather re-enabled successfully after {consecutiveReEnableFailures} failures.");
+                consecutiveReEnableFailures = 0;
+            }
         }
 
         // Check for stall: no inventory progress for a long time
@@ -370,6 +416,9 @@ public sealed class GatheringOrchestrator
         return cond[ConditionFlag.Crafting]
             || cond[ConditionFlag.PreparingToCraft]
             || cond[ConditionFlag.ExecutingCraftingAction]
+            || cond[ConditionFlag.Casting]
+            || cond[ConditionFlag.Jumping]
+            || cond[ConditionFlag.InFlight]
             || cond[ConditionFlag.Occupied]
             || cond[ConditionFlag.Occupied30]
             || cond[ConditionFlag.Occupied33]
@@ -410,6 +459,7 @@ public sealed class GatheringOrchestrator
         lastProgressTime = DateTime.Now;
         lastKnownCount = -1; // Will be seeded from actual inventory on first Update poll
         gbrIdlePolls = 0;
+        consecutiveReEnableFailures = 0;
         lastAutoGatherCheck = DateTime.MinValue;
         finishingNodeSince = null;
 
