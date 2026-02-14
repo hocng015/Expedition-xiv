@@ -69,6 +69,12 @@ public sealed class GatheringOrchestrator
     private const int MaxReEnableFailuresBeforeReset = 3;
 
     /// <summary>
+    /// When non-null, we're in a delay between tasks. Update() skips gathering logic until this time.
+    /// Replaces Task.Run+Task.Delay to avoid async state machine allocations.
+    /// </summary>
+    private DateTime? interTaskDelayUntil;
+
+    /// <summary>
     /// When non-null, the task quantity has been met but we're waiting for the player
     /// to finish mining/harvesting the current node before advancing.
     /// </summary>
@@ -129,7 +135,9 @@ public sealed class GatheringOrchestrator
         {
             // Further sort: active timed nodes go to the front
             var scheduled = NodeScheduler.BuildScheduledQueue(optimized);
-            optimized = scheduled.Select(s => s.Task).ToList();
+            optimized = new List<GatheringTask>(scheduled.Count);
+            for (var i = 0; i < scheduled.Count; i++)
+                optimized.Add(scheduled[i].Task);
         }
 
         taskQueue.Clear();
@@ -171,6 +179,7 @@ public sealed class GatheringOrchestrator
 
         CleanupGatherList();
 
+        interTaskDelayUntil = null;
         State = GatheringOrchestratorState.Idle;
         StatusMessage = "Gathering stopped.";
     }
@@ -187,6 +196,15 @@ public sealed class GatheringOrchestrator
         // Throttle polling to once per second
         if ((DateTime.Now - lastPollTime).TotalMilliseconds < 1000) return;
         lastPollTime = DateTime.Now;
+
+        // Inter-task delay (replaces Task.Run + Task.Delay)
+        if (interTaskDelayUntil.HasValue)
+        {
+            if (DateTime.Now < interTaskDelayUntil.Value) return;
+            interTaskDelayUntil = null;
+            StartCurrentTask();
+            return;
+        }
 
         var task = CurrentTask;
         if (task == null)
@@ -343,12 +361,24 @@ public sealed class GatheringOrchestrator
 
         if (task.IsTimedNode && task.SpawnHours != null)
         {
-            var isActive = task.SpawnHours.Any(h => EorzeanTime.IsWithinWindow(h, 2));
+            // For-loop instead of LINQ .Any()/.Min() to avoid delegate + enumerator allocation every second
+            var isActive = false;
+            var nextSpawn = double.MaxValue;
+            for (var i = 0; i < task.SpawnHours.Length; i++)
+            {
+                if (EorzeanTime.IsWithinWindow(task.SpawnHours[i], 2))
+                {
+                    isActive = true;
+                    break;
+                }
+                var s = EorzeanTime.SecondsUntilEorzeanHour(task.SpawnHours[i]);
+                if (s < nextSpawn) nextSpawn = s;
+            }
+
             if (isActive)
                 StatusMessage = $"Gathering {task.ItemName}: {task.QuantityGathered}/{task.QuantityNeeded} (timed node ACTIVE){gbrStatus}";
             else
             {
-                var nextSpawn = task.SpawnHours.Min(h => EorzeanTime.SecondsUntilEorzeanHour(h));
                 StatusMessage = $"Gathering {task.ItemName}: {task.QuantityGathered}/{task.QuantityNeeded} " +
                                 $"(timed node spawns in {EorzeanTime.FormatRealDuration(nextSpawn)}){gbrStatus}";
             }
@@ -366,8 +396,17 @@ public sealed class GatheringOrchestrator
 
     /// <summary>
     /// Returns true if there are any failed tasks.
+    /// Uses for-loop instead of LINQ to avoid enumerator allocation on every access.
     /// </summary>
-    public bool HasFailures => taskQueue.Any(t => t.Status == GatheringTaskStatus.Failed);
+    public bool HasFailures
+    {
+        get
+        {
+            for (var i = 0; i < taskQueue.Count; i++)
+                if (taskQueue[i].Status == GatheringTaskStatus.Failed) return true;
+            return false;
+        }
+    }
 
     /// <summary>
     /// Injects all queued items into GBR's auto-gather list via reflection.
@@ -375,10 +414,13 @@ public sealed class GatheringOrchestrator
     /// </summary>
     private void InjectGatherList()
     {
-        var items = taskQueue
-            .Where(t => t.Status != GatheringTaskStatus.Completed && t.Status != GatheringTaskStatus.Failed)
-            .Select(t => (t.ItemId, (uint)t.QuantityRemaining))
-            .ToList();
+        var items = new List<(uint, uint)>(taskQueue.Count);
+        for (var i = 0; i < taskQueue.Count; i++)
+        {
+            var t = taskQueue[i];
+            if (t.Status != GatheringTaskStatus.Completed && t.Status != GatheringTaskStatus.Failed)
+                items.Add((t.ItemId, (uint)t.QuantityRemaining));
+        }
 
         if (items.Count == 0) return;
 
@@ -510,12 +552,9 @@ public sealed class GatheringOrchestrator
             return;
         }
 
-        // Small delay before starting next task (let GBR settle)
-        Task.Run(async () =>
-        {
-            await Task.Delay(2000);
-            StartCurrentTask();
-        });
+        // Small delay before starting next task (let GBR settle).
+        // Uses a timestamp check in Update() instead of Task.Run to avoid async state machine allocation.
+        interTaskDelayUntil = DateTime.Now.AddSeconds(2.0);
     }
 
     private void OnGbrWaiting()

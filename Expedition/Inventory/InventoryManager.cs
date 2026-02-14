@@ -103,16 +103,68 @@ public sealed class InventoryManager
 
     /// <summary>
     /// Updates owned quantities for the entire resolved recipe.
+    /// Uses a single inventory snapshot to avoid rescanning containers for each material list.
     /// </summary>
-    public void UpdateResolvedRecipe(ResolvedRecipe resolved, bool includeSaddlebag = false)
+    public unsafe void UpdateResolvedRecipe(ResolvedRecipe resolved, bool includeSaddlebag = false)
     {
-        UpdateOwnedQuantities(resolved.GatherList, includeSaddlebag);
-        UpdateOwnedQuantities(resolved.OtherMaterials, includeSaddlebag);
+        var manager = InventoryManager_Game.Instance();
+        if (manager == null) return;
 
-        // Also update owned for intermediate craft ingredients
+        // Build a single item count snapshot for all needed item IDs
+        var itemIds = new HashSet<uint>();
+        foreach (var m in resolved.GatherList) itemIds.Add(m.ItemId);
+        foreach (var m in resolved.OtherMaterials) itemIds.Add(m.ItemId);
         foreach (var step in resolved.CraftOrder)
+            foreach (var ing in step.Recipe.Ingredients) itemIds.Add(ing.ItemId);
+
+        // Single pass through all containers to count everything at once
+        var counts = new Dictionary<uint, int>(itemIds.Count);
+        foreach (var id in itemIds) counts[id] = 0;
+
+        foreach (var invType in InventoryTypes)
+            AccumulateCounts(manager, invType, counts);
+
+        if (includeSaddlebag)
         {
-            UpdateOwnedQuantities(step.Recipe.Ingredients, includeSaddlebag);
+            foreach (var invType in SaddlebagTypes)
+                AccumulateCounts(manager, invType, counts);
+        }
+
+        // Apply counts in one pass per list (no container re-scanning)
+        foreach (var m in resolved.GatherList)
+            if (counts.TryGetValue(m.ItemId, out var c)) m.QuantityOwned = c;
+        foreach (var m in resolved.OtherMaterials)
+            if (counts.TryGetValue(m.ItemId, out var c)) m.QuantityOwned = c;
+        foreach (var step in resolved.CraftOrder)
+            foreach (var ing in step.Recipe.Ingredients)
+                if (counts.TryGetValue(ing.ItemId, out var c)) ing.QuantityOwned = c;
+    }
+
+    /// <summary>
+    /// Accumulates item counts from a single container into the counts dictionary.
+    /// Only counts items that exist as keys in the dictionary.
+    /// </summary>
+    private static unsafe void AccumulateCounts(
+        InventoryManager_Game* manager, InventoryType invType, Dictionary<uint, int> counts)
+    {
+        var container = manager->GetInventoryContainer(invType);
+        if (container == null) return;
+
+        for (var i = 0; i < container->Size; i++)
+        {
+            var slot = container->GetInventorySlot(i);
+            if (slot == null || slot->ItemId == 0) continue;
+
+            var id = slot->ItemId;
+            var qty = (int)slot->Quantity;
+
+            if (counts.ContainsKey(id))
+                counts[id] += qty;
+
+            // HQ item
+            var hqId = id - 1000000;
+            if (id > 1000000 && counts.ContainsKey(hqId))
+                counts[hqId] += qty;
         }
     }
 
@@ -150,20 +202,22 @@ public sealed class InventoryManager
     /// <summary>
     /// Returns the number of free inventory slots.
     /// </summary>
+    /// <summary>Player bag types for free-slot counting (static to avoid allocation per call).</summary>
+    private static readonly InventoryType[] PlayerBagTypes =
+    {
+        InventoryType.Inventory1,
+        InventoryType.Inventory2,
+        InventoryType.Inventory3,
+        InventoryType.Inventory4,
+    };
+
     public unsafe int GetFreeSlotCount()
     {
         var manager = InventoryManager_Game.Instance();
         if (manager == null) return 0;
 
         var free = 0;
-        var bagTypes = new[] {
-            InventoryType.Inventory1,
-            InventoryType.Inventory2,
-            InventoryType.Inventory3,
-            InventoryType.Inventory4,
-        };
-
-        foreach (var invType in bagTypes)
+        foreach (var invType in PlayerBagTypes)
         {
             var container = manager->GetInventoryContainer(invType);
             if (container == null) continue;
@@ -185,9 +239,9 @@ public sealed class InventoryManager
     /// </summary>
     public int EstimateInventoryShortfall(ResolvedRecipe resolved)
     {
-        var distinctItems = resolved.GatherList
-            .Where(g => g.QuantityRemaining > 0)
-            .Count();
+        var distinctItems = 0;
+        for (var i = 0; i < resolved.GatherList.Count; i++)
+            if (resolved.GatherList[i].QuantityRemaining > 0) distinctItems++;
 
         var freeSlots = GetFreeSlotCount();
         return Math.Max(0, distinctItems - freeSlots);

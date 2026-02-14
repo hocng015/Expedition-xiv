@@ -65,6 +65,11 @@ public sealed class Configuration : IPluginConfiguration
     public bool ShowDetailedStatus { get; set; } = false;
     public bool ShowEorzeanTime { get; set; } = true;
 
+    // --- Insights ---
+    public int InsightsRefreshIntervalMinutes { get; set; } = 5;
+    public string InsightsDefaultDataCenter { get; set; } = "Aether";
+    public bool InsightsAutoRefresh { get; set; } = true;
+
     // --- Activation ---
     public string ActivationKey { get; set; } = string.Empty;
 

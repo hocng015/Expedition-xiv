@@ -155,15 +155,25 @@ public sealed class OverlayWindow
         var otherMats = resolved.OtherMaterials;
         if (otherMats == null || otherMats.Count == 0) return;
 
-        var vendorItems = otherMats.Where(m => m.IsVendorItem && m.VendorInfo != null).ToList();
-        var dropItems = otherMats.Where(m => m.IsMobDrop && m.MobDrops != null && m.MobDrops.Count > 0 && (!m.IsVendorItem || m.VendorInfo == null)).ToList();
+        // Single-pass split avoids two LINQ passes + two List allocations per frame
+        List<MaterialRequirement>? vendorItems = null;
+        List<MaterialRequirement>? dropItems = null;
+        for (var i = 0; i < otherMats.Count; i++)
+        {
+            var m = otherMats[i];
+            if (m.IsVendorItem && m.VendorInfo != null)
+                (vendorItems ??= new()).Add(m);
+            else if (m.IsMobDrop && m.MobDrops != null && m.MobDrops.Count > 0)
+                (dropItems ??= new()).Add(m);
+        }
 
-        if (vendorItems.Count == 0 && dropItems.Count == 0) return;
+        if (vendorItems == null && dropItems == null) return;
 
         ImGui.Separator();
         ImGui.Spacing();
 
         // Vendor items
+        if (vendorItems != null)
         foreach (var mat in vendorItems)
         {
             var v = mat.VendorInfo!;
@@ -187,6 +197,7 @@ public sealed class OverlayWindow
         }
 
         // Mob drop items
+        if (dropItems != null)
         foreach (var mat in dropItems)
         {
             var remaining = mat.QuantityRemaining;
@@ -243,8 +254,10 @@ public sealed class OverlayWindow
             var orch = plugin.GatheringOrchestrator;
             if (orch.Tasks.Count > 0)
             {
-                var completed = orch.Tasks.Count(t => t.Status == GatheringTaskStatus.Completed);
                 var total = orch.Tasks.Count;
+                var completed = 0;
+                for (var i = 0; i < total; i++)
+                    if (orch.Tasks[i].Status == GatheringTaskStatus.Completed) completed++;
                 var fraction = total > 0 ? (float)completed / total : 0;
 
                 var current = orch.CurrentTask;
@@ -264,8 +277,10 @@ public sealed class OverlayWindow
             var orch = plugin.CraftingOrchestrator;
             if (orch.Tasks.Count > 0)
             {
-                var completed = orch.Tasks.Count(t => t.Status == CraftingTaskStatus.Completed);
                 var total = orch.Tasks.Count;
+                var completed = 0;
+                for (var i = 0; i < total; i++)
+                    if (orch.Tasks[i].Status == CraftingTaskStatus.Completed) completed++;
                 var fraction = total > 0 ? (float)completed / total : 0;
 
                 Theme.ProgressBar(fraction, Theme.Gold, $"Crafting: {completed}/{total}", 20);

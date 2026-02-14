@@ -117,6 +117,123 @@ public static class ActivationService
     }
 
     /// <summary>
+    /// Periodically re-checks the revocation list and deactivates if the key has been revoked.
+    /// Called from the framework update loop on a timer (e.g. every 10 minutes).
+    /// Runs the HTTP fetch on a background thread so it never blocks the game.
+    /// </summary>
+    private static volatile bool _revocationCheckInProgress;
+
+    public static void CheckRevocationPeriodic()
+    {
+        if (!IsActivated || Info == null) return;
+        if (_revocationCheckInProgress) return;
+
+        _revocationCheckInProgress = true;
+        var keyId = Info.KeyId;
+
+        Task.Run(async () =>
+        {
+            try
+            {
+                var isRevoked = await CheckRevocationListAsync(keyId);
+                if (isRevoked)
+                {
+                    DalamudApi.Log.Warning(
+                        $"Periodic revocation check: key {keyId.ToString()[..8]}... has been REVOKED.");
+                    IsActivated = false;
+                    Info = null;
+
+                    // Clear the stored key so it won't pass validation on next startup either
+                    var config = Expedition.Config;
+                    if (config != null)
+                    {
+                        config.ActivationKey = string.Empty;
+                        config.Save();
+                    }
+
+                    DalamudApi.ChatGui.PrintError(
+                        "[Expedition] Your activation key has been revoked. The plugin has been deactivated.");
+                }
+                else
+                {
+                    DalamudApi.Log.Information("Periodic revocation check: key not revoked.");
+                }
+            }
+            catch (Exception ex)
+            {
+                // Fail-open: if the check fails, don't lock the user out
+                DalamudApi.Log.Warning($"Periodic revocation check failed: {ex.Message}");
+            }
+            finally
+            {
+                _revocationCheckInProgress = false;
+            }
+        });
+    }
+
+    /// <summary>
+    /// Async version of revocation list check for use in background tasks.
+    /// </summary>
+    private static async Task<bool> CheckRevocationListAsync(Guid keyId)
+    {
+        var revokedIds = await FetchRevocationListAsync();
+        return IsKeyInRevocationList(keyId, revokedIds);
+    }
+
+    /// <summary>
+    /// Fetches and parses the revocation list JSON from the Gist.
+    /// </summary>
+    private static async Task<List<string>> FetchRevocationListAsync()
+    {
+        var response = await _httpClient.GetAsync(RevocationListUrl);
+        response.EnsureSuccessStatusCode();
+
+        if (response.Content.Headers.ContentLength > MaxRevocationResponseBytes)
+            throw new InvalidOperationException("Revocation list response too large.");
+
+        var json = await response.Content.ReadAsStringAsync();
+        if (json.Length > MaxRevocationResponseBytes)
+            throw new InvalidOperationException("Revocation list response too large.");
+
+        return JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+    }
+
+    /// <summary>
+    /// Checks if a key ID appears in the revocation list, accounting for the
+    /// UUID/GUID endianness mismatch between Python and C#.
+    ///
+    /// Python's uuid.UUID(bytes=...) uses big-endian (RFC 4122) for all fields.
+    /// C#'s new Guid(byte[]) uses mixed-endian (first 3 groups are little-endian).
+    /// The same 16 raw bytes produce different string representations:
+    ///   Python: d30ca0e2-a380-4342-a099-fce355de578f
+    ///   C#:     e2a00cd3-80a3-4243-a099-fce355de578f
+    ///
+    /// We check both the C# format and the Python-equivalent format so the
+    /// revocation works regardless of which format the gist contains.
+    /// </summary>
+    private static bool IsKeyInRevocationList(Guid keyId, List<string> revokedIds)
+    {
+        if (revokedIds.Count == 0) return false;
+
+        // C# native format (what the plugin produces from Guid.ToString())
+        var csharpFormat = keyId.ToString();
+        if (revokedIds.Contains(csharpFormat)) return true;
+
+        // Python-equivalent format: reverse the endianness of the first 3 groups
+        // to match what Python's uuid.UUID(bytes=...) would produce from the same raw bytes.
+        var bytes = keyId.ToByteArray(); // C# mixed-endian layout
+        var pythonFormat = string.Format(
+            "{0:x2}{1:x2}{2:x2}{3:x2}-{4:x2}{5:x2}-{6:x2}{7:x2}-{8:x2}{9:x2}-{10:x2}{11:x2}{12:x2}{13:x2}{14:x2}{15:x2}",
+            bytes[3], bytes[2], bytes[1], bytes[0],  // Data1 reversed (LE → BE)
+            bytes[5], bytes[4],                       // Data2 reversed
+            bytes[7], bytes[6],                       // Data3 reversed
+            bytes[8], bytes[9],                       // Data4 unchanged
+            bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+
+        return revokedIds.Contains(pythonFormat);
+    }
+
+    /// <summary>
     /// Fetches the revocation list from GitHub Gist and checks if the given key ID is revoked.
     /// Returns true if the key IS revoked. Returns false if not revoked or if the fetch fails
     /// (fail-open: offline users are not locked out).
@@ -126,23 +243,10 @@ public static class ActivationService
     {
         try
         {
-            var keyIdString = keyId.ToString();
-
             var task = Task.Run(async () =>
             {
-                var response = await _httpClient.GetAsync(RevocationListUrl);
-                response.EnsureSuccessStatusCode();
-
-                // Guard against oversized responses (compromised Gist / DoS)
-                if (response.Content.Headers.ContentLength > MaxRevocationResponseBytes)
-                    throw new InvalidOperationException("Revocation list response too large.");
-
-                var json = await response.Content.ReadAsStringAsync();
-                if (json.Length > MaxRevocationResponseBytes)
-                    throw new InvalidOperationException("Revocation list response too large.");
-
-                var revokedIds = JsonSerializer.Deserialize<List<string>>(json);
-                return revokedIds?.Contains(keyIdString) ?? false;
+                var revokedIds = await FetchRevocationListAsync();
+                return IsKeyInRevocationList(keyId, revokedIds);
             });
 
             if (task.Wait(RevocationFetchTimeout))

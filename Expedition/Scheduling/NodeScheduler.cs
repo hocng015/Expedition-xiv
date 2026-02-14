@@ -66,23 +66,34 @@ public sealed class NodeScheduler
     /// </summary>
     public static ScheduledGatherTask? PickNextTask(List<ScheduledGatherTask> queue)
     {
+        // For-loop replacements avoid LINQ enumerator/delegate allocations
         // First: any active timed node that isn't complete
-        var activeTimed = queue.FirstOrDefault(t =>
-            t.NodeType != GatherNodeType.Normal && t.IsCurrentlyActive && !t.Task.IsComplete);
-
-        if (activeTimed != null) return activeTimed;
+        for (var i = 0; i < queue.Count; i++)
+        {
+            var t = queue[i];
+            if (t.NodeType != GatherNodeType.Normal && t.IsCurrentlyActive && !t.Task.IsComplete)
+                return t;
+        }
 
         // Second: any normal node that isn't complete (fill gap while waiting for timed)
-        var normal = queue.FirstOrDefault(t =>
-            t.NodeType == GatherNodeType.Normal && !t.Task.IsComplete);
-
-        if (normal != null) return normal;
+        for (var i = 0; i < queue.Count; i++)
+        {
+            var t = queue[i];
+            if (t.NodeType == GatherNodeType.Normal && !t.Task.IsComplete)
+                return t;
+        }
 
         // Third: the timed node with the shortest wait
-        return queue
-            .Where(t => !t.Task.IsComplete)
-            .OrderBy(t => t.SecondsUntilNextSpawn)
-            .FirstOrDefault();
+        ScheduledGatherTask? best = null;
+        var bestTime = double.MaxValue;
+        for (var i = 0; i < queue.Count; i++)
+        {
+            var t = queue[i];
+            if (t.Task.IsComplete) continue;
+            var s = t.SecondsUntilNextSpawn;
+            if (s < bestTime) { bestTime = s; best = t; }
+        }
+        return best;
     }
 
     private static GatherNodeType ClassifyNode(Gathering.GatheringTask task)
@@ -136,7 +147,9 @@ public sealed class ScheduledGatherTask
         get
         {
             if (NodeType == GatherNodeType.Normal) return true;
-            return SpawnHours.Any(h => EorzeanTime.IsWithinWindow(h, SpawnDurationHours));
+            for (var i = 0; i < SpawnHours.Length; i++)
+                if (EorzeanTime.IsWithinWindow(SpawnHours[i], SpawnDurationHours)) return true;
+            return false;
         }
     }
 
@@ -148,7 +161,13 @@ public sealed class ScheduledGatherTask
             if (IsCurrentlyActive) return 0;
             if (SpawnHours.Length == 0) return 0;
 
-            return SpawnHours.Min(h => EorzeanTime.SecondsUntilEorzeanHour(h));
+            var min = double.MaxValue;
+            for (var i = 0; i < SpawnHours.Length; i++)
+            {
+                var s = EorzeanTime.SecondsUntilEorzeanHour(SpawnHours[i]);
+                if (s < min) min = s;
+            }
+            return min;
         }
     }
 

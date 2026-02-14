@@ -6,6 +6,7 @@ using Dalamud.Bindings.ImGui;
 using Expedition.Activation;
 using Expedition.Crafting;
 using Expedition.Gathering;
+using Expedition.Insights;
 using Expedition.Inventory;
 using Expedition.IPC;
 using Expedition.RecipeResolver;
@@ -33,11 +34,13 @@ public sealed class Expedition : IDalamudPlugin
     public GatheringOrchestrator GatheringOrchestrator { get; }
     public CraftingOrchestrator CraftingOrchestrator { get; }
     public WorkflowEngine WorkflowEngine { get; }
+    public InsightsEngine InsightsEngine { get; }
 
     private readonly MainWindow mainWindow;
     private readonly OverlayWindow overlayWindow;
 
     private DateTime lastExpirationCheck = DateTime.MinValue;
+    private DateTime lastRevocationCheck = DateTime.MinValue;
 
     public Expedition(IDalamudPluginInterface pluginInterface)
     {
@@ -60,6 +63,8 @@ public sealed class Expedition : IDalamudPlugin
             GatheringOrchestrator,
             CraftingOrchestrator,
             Config);
+
+        InsightsEngine = new InsightsEngine();
 
         mainWindow = new MainWindow(this);
         overlayWindow = new OverlayWindow(WorkflowEngine, this);
@@ -96,6 +101,7 @@ public sealed class Expedition : IDalamudPlugin
         DalamudApi.CommandManager.RemoveHandler(CommandName);
         DalamudApi.CommandManager.RemoveHandler(CommandAlias);
 
+        InsightsEngine.Dispose();
         WorkflowEngine.Dispose();
         RecipeResolver.MobDropLookup.Dispose();
         RecipeResolver.VendorLookup.Dispose();
@@ -235,10 +241,20 @@ public sealed class Expedition : IDalamudPlugin
             lastExpirationCheck = DateTime.UtcNow;
         }
 
-        // Skip workflow update when not activated
+        // Periodically re-check the revocation list (every 10 minutes)
+        if ((DateTime.UtcNow - lastRevocationCheck).TotalMinutes > 10)
+        {
+            ActivationService.CheckRevocationPeriodic();
+            lastRevocationCheck = DateTime.UtcNow;
+        }
+
+        // Skip updates when not activated
         if (!ActivationService.IsActivated) return;
 
         WorkflowEngine.Update();
+
+        if (Config.InsightsAutoRefresh)
+            InsightsEngine.Update();
     }
 
     private void DrawUI()

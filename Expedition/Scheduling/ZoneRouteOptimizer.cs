@@ -33,26 +33,37 @@ public sealed class ZoneRouteOptimizer
         }
 
         // Group normal tasks by zone to minimize zone transitions
-        var groupedNormal = normal
-            .GroupBy(t => t.GatherZoneId)
-            .SelectMany(g => g)
-            .ToList();
+        // Sort by zone ID instead of LINQ GroupBy+SelectMany (avoids intermediate grouping allocations)
+        normal.Sort((a, b) => a.GatherZoneId.CompareTo(b.GatherZoneId));
 
         // Build final list: timed items can be interleaved based on Eorzean time,
         // but normal items should be zone-clustered.
-        var result = new List<GatheringTask>();
+        var result = new List<GatheringTask>(tasks.Count);
 
-        // Start with any currently-active timed nodes
-        result.AddRange(timed.Where(t =>
-            t.SpawnHours != null &&
-            t.SpawnHours.Any(h => EorzeanTime.IsWithinWindow(h, t.IsAetherialReductionSource ? 4 : 2))));
+        // Start with any currently-active timed nodes (for-loop instead of LINQ .Where+.Any)
+        for (var i = 0; i < timed.Count; i++)
+        {
+            var t = timed[i];
+            if (t.SpawnHours == null) continue;
+            var duration = t.IsAetherialReductionSource ? 4 : 2;
+            for (var j = 0; j < t.SpawnHours.Length; j++)
+            {
+                if (EorzeanTime.IsWithinWindow(t.SpawnHours[j], duration))
+                {
+                    result.Add(t);
+                    break;
+                }
+            }
+        }
 
         // Then normal tasks grouped by zone
-        result.AddRange(groupedNormal);
+        result.AddRange(normal);
 
         // Then remaining timed tasks (will be scheduled by NodeScheduler when their window opens)
-        var alreadyAdded = new HashSet<uint>(result.Select(t => t.ItemId));
-        result.AddRange(timed.Where(t => !alreadyAdded.Contains(t.ItemId)));
+        var alreadyAdded = new HashSet<uint>(result.Count);
+        for (var i = 0; i < result.Count; i++) alreadyAdded.Add(result[i].ItemId);
+        for (var i = 0; i < timed.Count; i++)
+            if (!alreadyAdded.Contains(timed[i].ItemId)) result.Add(timed[i]);
 
         return result;
     }

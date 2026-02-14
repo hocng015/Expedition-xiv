@@ -304,7 +304,15 @@ public sealed class CraftingOrchestrator
     }
 
     public bool IsComplete => State == CraftingOrchestratorState.Completed || taskQueue.Count == 0;
-    public bool HasFailures => taskQueue.Any(t => t.Status == CraftingTaskStatus.Failed);
+    public bool HasFailures
+    {
+        get
+        {
+            for (var i = 0; i < taskQueue.Count; i++)
+                if (taskQueue[i].Status == CraftingTaskStatus.Failed) return true;
+            return false;
+        }
+    }
 
     /// <summary>
     /// Checks whether a task's required ingredients are available by looking at

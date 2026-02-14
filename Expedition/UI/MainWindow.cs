@@ -7,6 +7,7 @@ using Dalamud.Interface.Textures;
 using Expedition.Activation;
 using Expedition.Crafting;
 using Expedition.Gathering;
+using Expedition.Insights;
 using Expedition.Inventory;
 using Expedition.RecipeResolver;
 using InventoryMgr = Expedition.Inventory.InventoryManager;
@@ -141,6 +142,12 @@ public sealed class MainWindow
             if (ImGui.BeginTabItem("Log"))
             {
                 DrawLogTab();
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Insights"))
+            {
+                InsightsTab.Draw(plugin.InsightsEngine);
                 ImGui.EndTabItem();
             }
 
@@ -406,7 +413,7 @@ public sealed class MainWindow
     // Icon Helpers
     // ──────────────────────────────────────────────
 
-    private static void DrawGameIcon(uint iconId, Vector2 size)
+    internal static void DrawGameIcon(uint iconId, Vector2 size)
     {
         if (iconId == 0) return;
         var wrap = DalamudApi.TextureProvider
@@ -1228,13 +1235,20 @@ public sealed class MainWindow
             // Other materials — split into vendor and non-vendor sections
             if (previewResolution.OtherMaterials.Count > 0)
             {
-                var vendorItems = previewResolution.OtherMaterials
-                    .Where(m => m.IsVendorItem && m.VendorInfo != null).ToList();
-                var otherItems = previewResolution.OtherMaterials
-                    .Where(m => !m.IsVendorItem || m.VendorInfo == null).ToList();
+                // Single-pass split avoids two LINQ passes + two List allocations
+                List<MaterialRequirement>? vendorItems = null;
+                List<MaterialRequirement>? otherItems = null;
+                for (var i = 0; i < previewResolution.OtherMaterials.Count; i++)
+                {
+                    var m = previewResolution.OtherMaterials[i];
+                    if (m.IsVendorItem && m.VendorInfo != null)
+                        (vendorItems ??= new()).Add(m);
+                    else
+                        (otherItems ??= new()).Add(m);
+                }
 
                 // Vendor purchases section
-                if (vendorItems.Count > 0)
+                if (vendorItems is { Count: > 0 })
                 {
                     ImGui.Spacing();
                     ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
@@ -1301,9 +1315,9 @@ public sealed class MainWindow
                 }
 
                 // Non-vendor items (drops, etc.)
-                if (otherItems.Count > 0)
+                if (otherItems is { Count: > 0 })
                 {
-                    if (vendorItems.Count > 0) ImGui.Spacing();
+                    if (vendorItems is { Count: > 0 }) ImGui.Spacing();
                     ImGui.Spacing();
                     ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
                     ImGui.TextColored(Theme.Warning, "Drops / Other");
@@ -1646,15 +1660,24 @@ public sealed class MainWindow
             var otherMats = resolved.OtherMaterials;
             if (otherMats == null || otherMats.Count == 0) return;
 
-            var vendorItems = otherMats.Where(m => m.IsVendorItem && m.VendorInfo != null).ToList();
-            var dropItems = otherMats.Where(m => !m.IsVendorItem || m.VendorInfo == null).ToList();
+            // Single-pass split avoids two LINQ passes + two List allocations per frame
+            List<MaterialRequirement>? vendorItems = null;
+            List<MaterialRequirement>? dropItems = null;
+            for (var i = 0; i < otherMats.Count; i++)
+            {
+                var m = otherMats[i];
+                if (m.IsVendorItem && m.VendorInfo != null)
+                    (vendorItems ??= new()).Add(m);
+                else
+                    (dropItems ??= new()).Add(m);
+            }
 
-            if (vendorItems.Count == 0 && dropItems.Count == 0) return;
+            if (vendorItems == null && dropItems == null) return;
 
             ImGui.Spacing();
 
             // Vendor purchases
-            if (vendorItems.Count > 0)
+            if (vendorItems is { Count: > 0 })
             {
                 Theme.SectionHeader("Vendor Purchases", Theme.Gold);
                 ImGui.Spacing();
@@ -1692,7 +1715,7 @@ public sealed class MainWindow
             }
 
             // Mob drops
-            if (dropItems.Count > 0)
+            if (dropItems is { Count: > 0 })
             {
                 Theme.SectionHeader("Drops / Other", Theme.Warning);
                 ImGui.Spacing();
@@ -1757,9 +1780,11 @@ public sealed class MainWindow
         var orch = plugin.GatheringOrchestrator;
         if (orch.Tasks.Count == 0) return;
 
-        // Overall progress
-        var completedCount = orch.Tasks.Count(t => t.Status == GatheringTaskStatus.Completed);
+        // Overall progress (for-loop avoids LINQ enumerator allocation on every frame)
         var totalCount = orch.Tasks.Count;
+        var completedCount = 0;
+        for (var i = 0; i < totalCount; i++)
+            if (orch.Tasks[i].Status == GatheringTaskStatus.Completed) completedCount++;
         var overallFraction = totalCount > 0 ? (float)completedCount / totalCount : 0;
         Theme.ProgressBar(overallFraction, Theme.AccentDim,
             $"{completedCount}/{totalCount} items", 6);
@@ -1789,10 +1814,9 @@ public sealed class MainWindow
         ImGui.SameLine(0, 0);
         ImGui.Text(task.ItemName);
 
-        // Progress count on the right
+        // Progress count on the right — use fixed-width positioning instead of CalcTextSize per frame
         var progressText = $"{task.QuantityGathered}/{task.QuantityNeeded}";
-        var progressWidth = ImGui.CalcTextSize(progressText).X;
-        ImGui.SameLine(ImGui.GetContentRegionMax().X - progressWidth - Theme.Pad);
+        ImGui.SameLine(ImGui.GetContentRegionMax().X - 80 - Theme.Pad);
         ImGui.TextColored(task.IsComplete ? Theme.SuccessDim : Theme.TextSecondary, progressText);
 
         // Progress bar for active task
@@ -1818,9 +1842,11 @@ public sealed class MainWindow
         var orch = plugin.CraftingOrchestrator;
         if (orch.Tasks.Count == 0) return;
 
-        // Overall progress
-        var completedCount = orch.Tasks.Count(t => t.Status == CraftingTaskStatus.Completed);
+        // Overall progress (for-loop avoids LINQ enumerator allocation on every frame)
         var totalCount = orch.Tasks.Count;
+        var completedCount = 0;
+        for (var i = 0; i < totalCount; i++)
+            if (orch.Tasks[i].Status == CraftingTaskStatus.Completed) completedCount++;
         var overallFraction = totalCount > 0 ? (float)completedCount / totalCount : 0;
         Theme.ProgressBar(overallFraction, Theme.GoldDim,
             $"{completedCount}/{totalCount} recipes", 6);

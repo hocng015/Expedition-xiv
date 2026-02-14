@@ -297,10 +297,16 @@ public sealed class WorkflowEngine : IDisposable
 
             ResolvedRecipe = recipeResolver.Resolve(CurrentRecipe!, TargetQuantity, inventoryLookup);
 
-            var timedCount = ResolvedRecipe.GatherList.Count(g => g.IsTimedNode);
-            var collectableCount = ResolvedRecipe.GatherList.Count(g => g.IsCollectable);
-            var aethersandCount = ResolvedRecipe.GatherList.Count(g => g.IsAetherialReductionSource);
-            var crystalCount = ResolvedRecipe.GatherList.Count(g => g.IsCrystal);
+            // Single pass through gather list instead of four separate .Count() passes
+            int timedCount = 0, collectableCount = 0, aethersandCount = 0, crystalCount = 0;
+            for (var i = 0; i < ResolvedRecipe.GatherList.Count; i++)
+            {
+                var g = ResolvedRecipe.GatherList[i];
+                if (g.IsTimedNode) timedCount++;
+                if (g.IsCollectable) collectableCount++;
+                if (g.IsAetherialReductionSource) aethersandCount++;
+                if (g.IsCrystal) crystalCount++;
+            }
 
             AddLog($"Recipe resolved: {ResolvedRecipe.GatherList.Count} gatherable, " +
                    $"{ResolvedRecipe.CraftOrder.Count} craft steps, " +
@@ -431,15 +437,27 @@ public sealed class WorkflowEngine : IDisposable
         {
             inventoryManager.UpdateResolvedRecipe(ResolvedRecipe!, config.IncludeSaddlebagInScans);
 
-            var totalGatherNeeded = ResolvedRecipe!.GatherList.Sum(g => g.QuantityRemaining);
-            var totalGatherItems = ResolvedRecipe.GatherList.Count(g => g.QuantityRemaining > 0);
+            int totalGatherNeeded = 0, totalGatherItems = 0;
+            for (var i = 0; i < ResolvedRecipe!.GatherList.Count; i++)
+            {
+                var remaining = ResolvedRecipe.GatherList[i].QuantityRemaining;
+                if (remaining > 0)
+                {
+                    totalGatherNeeded += remaining;
+                    totalGatherItems++;
+                }
+            }
 
             AddLog($"Inventory checked: {totalGatherItems} items need gathering ({totalGatherNeeded} total units).");
 
             // Collectable inventory pressure
-            var collectableSlots = ResolvedRecipe.GatherList
-                .Where(g => g.IsCollectable && g.QuantityRemaining > 0)
-                .Sum(g => g.QuantityRemaining);
+            var collectableSlots = 0;
+            for (var i = 0; i < ResolvedRecipe.GatherList.Count; i++)
+            {
+                var g = ResolvedRecipe.GatherList[i];
+                if (g.IsCollectable && g.QuantityRemaining > 0)
+                    collectableSlots += g.QuantityRemaining;
+            }
 
             var normalSlots = inventoryManager.EstimateInventoryShortfall(ResolvedRecipe);
 
@@ -448,14 +466,24 @@ public sealed class WorkflowEngine : IDisposable
             if (normalSlots > 0)
                 AddLog($"  [Warning] Estimated {normalSlots} additional inventory slots needed.");
 
-            // Non-obtainable materials — split vendor vs non-vendor
-            var missingOther = ResolvedRecipe.OtherMaterials.Where(m => m.QuantityRemaining > 0).ToList();
-            if (missingOther.Count > 0)
+            // Non-obtainable materials — single-pass split instead of three LINQ passes
+            List<MaterialRequirement>? missingOther = null;
+            List<MaterialRequirement>? vendorItems = null;
+            List<MaterialRequirement>? nonVendorItems = null;
+            for (var i = 0; i < ResolvedRecipe.OtherMaterials.Count; i++)
             {
-                var vendorItems = missingOther.Where(m => m.IsVendorItem && m.VendorInfo != null).ToList();
-                var nonVendorItems = missingOther.Where(m => !m.IsVendorItem || m.VendorInfo == null).ToList();
+                var m = ResolvedRecipe.OtherMaterials[i];
+                if (m.QuantityRemaining <= 0) continue;
+                (missingOther ??= new()).Add(m);
+                if (m.IsVendorItem && m.VendorInfo != null)
+                    (vendorItems ??= new()).Add(m);
+                else
+                    (nonVendorItems ??= new()).Add(m);
+            }
+            if (missingOther is { Count: > 0 })
+            {
 
-                if (vendorItems.Count > 0)
+                if (vendorItems is { Count: > 0 })
                 {
                     foreach (var mat in vendorItems)
                     {
@@ -479,7 +507,7 @@ public sealed class WorkflowEngine : IDisposable
                     }
                 }
 
-                if (nonVendorItems.Count > 0)
+                if (nonVendorItems is { Count: > 0 })
                 {
                     foreach (var mat in nonVendorItems)
                     {
@@ -611,10 +639,13 @@ public sealed class WorkflowEngine : IDisposable
         {
             if (gatheringOrchestrator.HasFailures)
             {
-                var failures = gatheringOrchestrator.Tasks
-                    .Where(t => t.Status == GatheringTaskStatus.Failed)
-                    .Select(t => t.ItemName);
-                var failMsg = $"Some gathering tasks failed: {string.Join(", ", failures)}";
+                var failNames = new List<string>();
+                for (var i = 0; i < gatheringOrchestrator.Tasks.Count; i++)
+                {
+                    var t = gatheringOrchestrator.Tasks[i];
+                    if (t.Status == GatheringTaskStatus.Failed) failNames.Add(t.ItemName);
+                }
+                var failMsg = $"Some gathering tasks failed: {string.Join(", ", failNames)}";
                 AddLog(failMsg);
 
                 if (config.PauseOnError)
@@ -816,10 +847,13 @@ public sealed class WorkflowEngine : IDisposable
         {
             if (craftingOrchestrator.HasFailures)
             {
-                var failures = craftingOrchestrator.Tasks
-                    .Where(t => t.Status == CraftingTaskStatus.Failed)
-                    .Select(t => $"{t.ItemName} ({t.ErrorMessage})");
-                AddLog($"Crafting tasks failed: {string.Join(", ", failures)}");
+                var failDescs = new List<string>();
+                for (var i = 0; i < craftingOrchestrator.Tasks.Count; i++)
+                {
+                    var t = craftingOrchestrator.Tasks[i];
+                    if (t.Status == CraftingTaskStatus.Failed) failDescs.Add($"{t.ItemName} ({t.ErrorMessage})");
+                }
+                AddLog($"Crafting tasks failed: {string.Join(", ", failDescs)}");
             }
 
             // Verify the final target item is actually in inventory
@@ -931,9 +965,8 @@ public sealed class WorkflowEngine : IDisposable
 
     public void AddLog(string message)
     {
-        var timestamp = DateTime.Now.ToString("HH:mm:ss");
-        Log.Add($"[{timestamp}] {message}");
-        DalamudApi.Log.Information($"[Workflow] {message}");
+        Log.Add(string.Concat("[", DateTime.Now.ToString("HH:mm:ss"), "] ", message));
+        DalamudApi.Log.Information(string.Concat("[Workflow] ", message));
     }
 
     private void ResetOneShots()
