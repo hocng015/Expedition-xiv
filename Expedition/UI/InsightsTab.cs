@@ -28,6 +28,7 @@ public static class InsightsTab
 
     // Icon sizes
     private static readonly Vector2 IconSm = new(24, 24);
+    private static readonly Vector2 IconRow = new(32, 32);  // Table row icons — larger for readability
     private static readonly Vector2 IconMd = new(36, 36);
 
     public static void Draw(InsightsEngine engine)
@@ -578,18 +579,18 @@ public static class InsightsTab
 
         // Column header
         ImGui.TextColored(Theme.TextMuted, "#");
-        ImGui.SameLine(30);
+        ImGui.SameLine(40);
         ImGui.TextColored(Theme.TextMuted, "Item");
         if (showCategory)
         {
-            ImGui.SameLine(280);
+            ImGui.SameLine(540);
             ImGui.TextColored(Theme.TextMuted, "Category");
         }
-        ImGui.SameLine(showCategory ? 400 : 280);
+        ImGui.SameLine(showCategory ? 680 : 540);
         ImGui.TextColored(Theme.TextMuted, "Velocity");
-        ImGui.SameLine(showCategory ? 490 : 370);
+        ImGui.SameLine(showCategory ? 800 : 660);
         ImGui.TextColored(Theme.TextMuted, "Avg Price");
-        ImGui.SameLine(showCategory ? 590 : 470);
+        ImGui.SameLine(showCategory ? 920 : 780);
         ImGui.TextColored(Theme.TextMuted, "Daily Gil Vol");
         ImGui.Separator();
 
@@ -602,14 +603,14 @@ public static class InsightsTab
 
             // Rank number
             ImGui.TextColored(Theme.TextMuted, (i + 1).ToString());
-            ImGui.SameLine(30);
+            ImGui.SameLine(40);
 
             // Icon + Name
-            MainWindow.DrawGameIcon(item.IconId, IconSm);
+            MainWindow.DrawGameIcon(item.IconId, IconRow);
             ImGui.SameLine(0, Theme.PadSmall);
 
             var cursorY = ImGui.GetCursorPosY();
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
 
             var nameText = string.IsNullOrEmpty(item.ItemName)
                 ? string.Concat("Item #", item.ItemId.ToString())
@@ -617,7 +618,7 @@ public static class InsightsTab
 
             // Clickable name for expansion
             if (ImGui.Selectable(string.Concat(nameText, "##item", i.ToString()),
-                isExpanded, ImGuiSelectableFlags.None, new Vector2(showCategory ? 200 : 200, 0)))
+                isExpanded, ImGuiSelectableFlags.None, new Vector2(showCategory ? 450 : 460, 0)))
             {
                 expandedItemIndex = isExpanded ? -1 : i;
             }
@@ -625,31 +626,31 @@ public static class InsightsTab
             // Category badge
             if (showCategory && !string.IsNullOrEmpty(item.CategoryName))
             {
-                ImGui.SameLine(280);
-                ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+                ImGui.SameLine(540);
+                ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
                 ImGui.TextColored(Theme.TextSecondary, item.CategoryName);
             }
 
             // Velocity
-            var velX = showCategory ? 400f : 280f;
+            var velX = showCategory ? 680f : 540f;
             ImGui.SameLine(velX);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.Accent, string.Concat(FormatNumber(item.RegularSaleVelocity), "/day"));
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(string.Concat(FormatNumber(item.RegularSaleVelocity), "/day"), Theme.Accent);
 
             // Average price
-            var priceX = showCategory ? 490f : 370f;
+            var priceX = showCategory ? 800f : 660f;
             ImGui.SameLine(priceX);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.Gold, FormatGil(item.CurrentAveragePrice));
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatGil(item.CurrentAveragePrice), Theme.Gold);
 
             // Daily gil volume
-            var gilX = showCategory ? 590f : 470f;
+            var gilX = showCategory ? 920f : 780f;
             ImGui.SameLine(gilX);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.Success, FormatGil(item.EstimatedDailyGilVolume));
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatGil(item.EstimatedDailyGilVolume), Theme.Success);
 
             // Reset cursor
-            ImGui.SetCursorPosY(cursorY + IconSm.Y + 2);
+            ImGui.SetCursorPosY(cursorY + IconRow.Y + 4);
 
             // Expanded detail: item stats
             if (isExpanded)
@@ -704,17 +705,17 @@ public static class InsightsTab
 
         // Column headers
         ImGui.TextColored(Theme.TextMuted, "#");
-        ImGui.SameLine(30);
+        ImGui.SameLine(40);
         ImGui.TextColored(Theme.TextMuted, "Item");
-        ImGui.SameLine(260);
+        ImGui.SameLine(540);
         ImGui.TextColored(Theme.TextMuted, "State");
-        ImGui.SameLine(360);
-        ImGui.TextColored(Theme.TextMuted, "Avg Price");
-        ImGui.SameLine(460);
-        ImGui.TextColored(Theme.TextMuted, "Qty Sold");
-        ImGui.SameLine(550);
-        ImGui.TextColored(Theme.TextMuted, "Market Value");
         ImGui.SameLine(660);
+        ImGui.TextColored(Theme.TextMuted, "Avg Price");
+        ImGui.SameLine(780);
+        ImGui.TextColored(Theme.TextMuted, "Qty Sold");
+        ImGui.SameLine(890);
+        ImGui.TextColored(Theme.TextMuted, "Market Value");
+        ImGui.SameLine(1020);
         ImGui.TextColored(Theme.TextMuted, "% Change");
         ImGui.Separator();
 
@@ -728,54 +729,54 @@ public static class InsightsTab
 
             // Rank
             ImGui.TextColored(Theme.TextMuted, (i + 1).ToString());
-            ImGui.SameLine(30);
+            ImGui.SameLine(40);
 
             // Icon + Name
-            MainWindow.DrawGameIcon(item.IconId, IconSm);
+            MainWindow.DrawGameIcon(item.IconId, IconRow);
             ImGui.SameLine(0, Theme.PadSmall);
 
             var cursorY = ImGui.GetCursorPosY();
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
 
             var nameText = string.IsNullOrEmpty(item.ItemName)
                 ? string.Concat("Item #", item.ItemId.ToString())
                 : item.ItemName;
 
             if (ImGui.Selectable(string.Concat(nameText, "##eco", i.ToString()),
-                isExpanded, ImGuiSelectableFlags.None, new Vector2(180, 0)))
+                isExpanded, ImGuiSelectableFlags.None, new Vector2(450, 0)))
             {
                 expandedEconomyIndex = isExpanded ? -1 : i;
             }
 
             // State badge with color
-            ImGui.SameLine(260);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SameLine(540);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             var stateColor = GetStateColor(item.State);
-            ImGui.TextColored(stateColor, item.State);
+            DrawBoxedValue(item.State, stateColor);
 
             // Average price
-            ImGui.SameLine(360);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.Gold, FormatGil(item.AveragePrice));
+            ImGui.SameLine(660);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatGil(item.AveragePrice), Theme.Gold);
 
             // Quantity sold
-            ImGui.SameLine(460);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.TextPrimary, FormatNumber(item.QuantitySold));
+            ImGui.SameLine(780);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatNumber(item.QuantitySold), Theme.TextPrimary);
 
             // Market value
-            ImGui.SameLine(550);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.Success, FormatGil(item.MarketValue));
+            ImGui.SameLine(890);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatGil(item.MarketValue), Theme.Success);
 
             // Percent change
-            ImGui.SameLine(660);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SameLine(1020);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             var pctColor = item.PercentChange >= 0 ? Theme.Success : Theme.Error;
             var pctText = string.Concat(item.PercentChange >= 0 ? "+" : "", item.PercentChange.ToString("F1"), "%");
-            ImGui.TextColored(pctColor, pctText);
+            DrawBoxedValue(pctText, pctColor);
 
-            ImGui.SetCursorPosY(cursorY + IconSm.Y + 2);
+            ImGui.SetCursorPosY(cursorY + IconRow.Y + 4);
 
             // Expanded detail
             if (isExpanded)
@@ -834,17 +835,17 @@ public static class InsightsTab
 
         // Column headers
         ImGui.TextColored(Theme.TextMuted, "#");
-        ImGui.SameLine(30);
+        ImGui.SameLine(40);
         ImGui.TextColored(Theme.TextMuted, "Item");
-        ImGui.SameLine(260);
+        ImGui.SameLine(540);
         ImGui.TextColored(Theme.TextMuted, "Job");
-        ImGui.SameLine(310);
-        ImGui.TextColored(Theme.TextMuted, "Revenue");
-        ImGui.SameLine(410);
-        ImGui.TextColored(Theme.TextMuted, "Cost");
-        ImGui.SameLine(500);
-        ImGui.TextColored(Theme.TextMuted, "Profit");
         ImGui.SameLine(600);
+        ImGui.TextColored(Theme.TextMuted, "Revenue");
+        ImGui.SameLine(720);
+        ImGui.TextColored(Theme.TextMuted, "Cost");
+        ImGui.SameLine(830);
+        ImGui.TextColored(Theme.TextMuted, "Profit");
+        ImGui.SameLine(950);
         ImGui.TextColored(Theme.TextMuted, "Margin");
         ImGui.Separator();
 
@@ -858,55 +859,55 @@ public static class InsightsTab
 
             // Rank
             ImGui.TextColored(Theme.TextMuted, (i + 1).ToString());
-            ImGui.SameLine(30);
+            ImGui.SameLine(40);
 
             // Icon + Name
-            MainWindow.DrawGameIcon(item.IconId, IconSm);
+            MainWindow.DrawGameIcon(item.IconId, IconRow);
             ImGui.SameLine(0, Theme.PadSmall);
 
             var cursorY = ImGui.GetCursorPosY();
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
 
             var nameText = string.IsNullOrEmpty(item.ItemName)
                 ? string.Concat("Item #", item.ItemId.ToString())
                 : item.ItemName;
 
             if (ImGui.Selectable(string.Concat(nameText, "##craft", i.ToString()),
-                isExpanded, ImGuiSelectableFlags.None, new Vector2(180, 0)))
+                isExpanded, ImGuiSelectableFlags.None, new Vector2(450, 0)))
             {
                 expandedCraftIndex = isExpanded ? -1 : i;
             }
 
             // Job
-            ImGui.SameLine(260);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SameLine(540);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             ImGui.TextColored(Theme.TextSecondary, item.Job);
 
             // Revenue
-            ImGui.SameLine(310);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.Gold, FormatGil(item.Revenue));
+            ImGui.SameLine(600);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatGil(item.Revenue), Theme.Gold);
 
             // Cost
-            ImGui.SameLine(410);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.Error, FormatGil(item.CraftingCost));
+            ImGui.SameLine(720);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatGil(item.CraftingCost), Theme.Error);
 
             // Profit
-            ImGui.SameLine(500);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SameLine(830);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             var profitColor = item.Profit >= 0 ? Theme.Success : Theme.Error;
-            ImGui.TextColored(profitColor, FormatGil(item.Profit));
+            DrawBoxedValue(FormatGil(item.Profit), profitColor);
 
             // Margin %
-            ImGui.SameLine(600);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SameLine(950);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             var marginColor = item.ProfitPercent >= 50 ? Theme.Success
                 : item.ProfitPercent >= 20 ? Theme.Accent
                 : Theme.Warning;
-            ImGui.TextColored(marginColor, string.Concat(item.ProfitPercent.ToString("F0"), "%"));
+            DrawBoxedValue(string.Concat(item.ProfitPercent.ToString("F0"), "%"), marginColor);
 
-            ImGui.SetCursorPosY(cursorY + IconSm.Y + 2);
+            ImGui.SetCursorPosY(cursorY + IconRow.Y + 4);
 
             // Expanded detail
             if (isExpanded)
@@ -952,15 +953,15 @@ public static class InsightsTab
 
         // Column headers
         ImGui.TextColored(Theme.TextMuted, "#");
-        ImGui.SameLine(30);
+        ImGui.SameLine(40);
         ImGui.TextColored(Theme.TextMuted, "Item");
-        ImGui.SameLine(260);
+        ImGui.SameLine(540);
         ImGui.TextColored(Theme.TextMuted, "Scrip Cost");
-        ImGui.SameLine(370);
+        ImGui.SameLine(660);
         ImGui.TextColored(Theme.TextMuted, "Market Price");
-        ImGui.SameLine(490);
+        ImGui.SameLine(800);
         ImGui.TextColored(Theme.TextMuted, "Gil/Scrip");
-        ImGui.SameLine(590);
+        ImGui.SameLine(920);
         ImGui.TextColored(Theme.TextMuted, "Qty Sold");
         ImGui.Separator();
 
@@ -974,49 +975,49 @@ public static class InsightsTab
 
             // Rank
             ImGui.TextColored(Theme.TextMuted, (i + 1).ToString());
-            ImGui.SameLine(30);
+            ImGui.SameLine(40);
 
             // Icon + Name
-            MainWindow.DrawGameIcon(item.IconId, IconSm);
+            MainWindow.DrawGameIcon(item.IconId, IconRow);
             ImGui.SameLine(0, Theme.PadSmall);
 
             var cursorY = ImGui.GetCursorPosY();
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
 
             var nameText = string.IsNullOrEmpty(item.ItemName)
                 ? string.Concat("Item #", item.ItemId.ToString())
                 : item.ItemName;
 
             if (ImGui.Selectable(string.Concat(nameText, "##scrip", i.ToString()),
-                isExpanded, ImGuiSelectableFlags.None, new Vector2(180, 0)))
+                isExpanded, ImGuiSelectableFlags.None, new Vector2(450, 0)))
             {
                 expandedScripIndex = isExpanded ? -1 : i;
             }
 
             // Scrip cost
-            ImGui.SameLine(260);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.Collectable, item.ScripCost.ToString());
+            ImGui.SameLine(540);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(item.ScripCost.ToString(), Theme.Collectable);
 
             // Market price
-            ImGui.SameLine(370);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.Gold, FormatGil(item.MarketPrice));
+            ImGui.SameLine(660);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatGil(item.MarketPrice), Theme.Gold);
 
             // Gil per scrip
-            ImGui.SameLine(490);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SameLine(800);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             var gilPerColor = item.GilPerScrip >= 200 ? Theme.Success
                 : item.GilPerScrip >= 100 ? Theme.Accent
                 : Theme.Warning;
-            ImGui.TextColored(gilPerColor, FormatGil(item.GilPerScrip));
+            DrawBoxedValue(FormatGil(item.GilPerScrip), gilPerColor);
 
             // Quantity sold
-            ImGui.SameLine(590);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.TextPrimary, FormatNumber(item.QuantitySold));
+            ImGui.SameLine(920);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatNumber(item.QuantitySold), Theme.TextPrimary);
 
-            ImGui.SetCursorPosY(cursorY + IconSm.Y + 2);
+            ImGui.SetCursorPosY(cursorY + IconRow.Y + 4);
 
             // Expanded detail
             if (isExpanded)
@@ -1059,15 +1060,15 @@ public static class InsightsTab
 
         // Column headers
         ImGui.TextColored(Theme.TextMuted, "#");
-        ImGui.SameLine(30);
+        ImGui.SameLine(40);
         ImGui.TextColored(Theme.TextMuted, "Item");
-        ImGui.SameLine(260);
+        ImGui.SameLine(540);
         ImGui.TextColored(Theme.TextMuted, "Current Avg");
-        ImGui.SameLine(380);
+        ImGui.SameLine(680);
         ImGui.TextColored(Theme.TextMuted, "Previous Avg");
-        ImGui.SameLine(500);
+        ImGui.SameLine(820);
         ImGui.TextColored(Theme.TextMuted, "Delta");
-        ImGui.SameLine(600);
+        ImGui.SameLine(960);
         ImGui.TextColored(Theme.TextMuted, "% Change");
         ImGui.Separator();
 
@@ -1081,50 +1082,50 @@ public static class InsightsTab
 
             // Rank
             ImGui.TextColored(Theme.TextMuted, (i + 1).ToString());
-            ImGui.SameLine(30);
+            ImGui.SameLine(40);
 
             // Icon + Name
-            MainWindow.DrawGameIcon(item.IconId, IconSm);
+            MainWindow.DrawGameIcon(item.IconId, IconRow);
             ImGui.SameLine(0, Theme.PadSmall);
 
             var cursorY = ImGui.GetCursorPosY();
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
 
             var nameText = string.IsNullOrEmpty(item.ItemName)
                 ? string.Concat("Item #", item.ItemId.ToString())
                 : item.ItemName;
 
             if (ImGui.Selectable(string.Concat(nameText, "##trend", i.ToString()),
-                isExpanded, ImGuiSelectableFlags.None, new Vector2(180, 0)))
+                isExpanded, ImGuiSelectableFlags.None, new Vector2(450, 0)))
             {
                 expandedTrendIndex = isExpanded ? -1 : i;
             }
 
             // Current average
-            ImGui.SameLine(260);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.Gold, FormatGil(item.CurrentAverage));
+            ImGui.SameLine(540);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatGil(item.CurrentAverage), Theme.Gold);
 
             // Previous average
-            ImGui.SameLine(380);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
-            ImGui.TextColored(Theme.TextSecondary, FormatGil(item.PreviousAverage));
+            ImGui.SameLine(680);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
+            DrawBoxedValue(FormatGil(item.PreviousAverage), Theme.TextSecondary);
 
             // Delta
-            ImGui.SameLine(500);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SameLine(820);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             var deltaColor = item.PriceDelta >= 0 ? Theme.Success : Theme.Error;
             var deltaPrefix = item.PriceDelta >= 0 ? "+" : "";
-            ImGui.TextColored(deltaColor, string.Concat(deltaPrefix, FormatGil(item.PriceDelta)));
+            DrawBoxedValue(string.Concat(deltaPrefix, FormatGil(item.PriceDelta)), deltaColor);
 
             // Percent change
-            ImGui.SameLine(600);
-            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.SameLine(960);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             var pctColor = item.PercentChange >= 0 ? Theme.Success : Theme.Error;
             var pctPrefix = item.PercentChange >= 0 ? "+" : "";
-            ImGui.TextColored(pctColor, string.Concat(pctPrefix, item.PercentChange.ToString("F1"), "%"));
+            DrawBoxedValue(string.Concat(pctPrefix, item.PercentChange.ToString("F1"), "%"), pctColor);
 
-            ImGui.SetCursorPosY(cursorY + IconSm.Y + 2);
+            ImGui.SetCursorPosY(cursorY + IconRow.Y + 4);
 
             // Expanded detail
             if (isExpanded)
@@ -1141,6 +1142,32 @@ public static class InsightsTab
         }
 
         ImGui.EndChild();
+    }
+
+    // ──────────────────────────────────────────────
+    // Boxed Value Renderer
+    // ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Draws text inside a colored rounded-rect box (border + semi-transparent fill).
+    /// Used for numeric cell values in tables to match the FFXIV Market Board style.
+    /// </summary>
+    private static void DrawBoxedValue(string text, Vector4 color)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var pos = ImGui.GetCursorScreenPos();
+        var textSize = ImGui.CalcTextSize(text);
+        var padding = new Vector2(4, 1);
+        var boxMin = pos;
+        var boxMax = new Vector2(pos.X + textSize.X + padding.X * 2, pos.Y + textSize.Y + padding.Y * 2);
+        var bgColor = new Vector4(color.X, color.Y, color.Z, 0.12f);
+        var borderColor = new Vector4(color.X, color.Y, color.Z, 0.55f);
+
+        drawList.AddRectFilled(boxMin, boxMax, ImGui.ColorConvertFloat4ToU32(bgColor), 3f);
+        drawList.AddRect(boxMin, boxMax, ImGui.ColorConvertFloat4ToU32(borderColor), 3f);
+        drawList.AddText(new Vector2(pos.X + padding.X, pos.Y + padding.Y),
+            ImGui.ColorConvertFloat4ToU32(color), text);
+        ImGui.Dummy(new Vector2(textSize.X + padding.X * 2, textSize.Y + padding.Y * 2));
     }
 
     // ──────────────────────────────────────────────

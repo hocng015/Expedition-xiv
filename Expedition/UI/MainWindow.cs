@@ -86,8 +86,8 @@ public sealed class MainWindow
     {
         if (!IsOpen) return;
 
-        ImGui.SetNextWindowSize(new Vector2(780, 600), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSizeConstraints(new Vector2(600, 400), new Vector2(float.MaxValue, float.MaxValue));
+        ImGui.SetNextWindowSize(new Vector2(1280, 600), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSizeConstraints(new Vector2(1000, 400), new Vector2(float.MaxValue, float.MaxValue));
 
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(12, 12));
         if (!ImGui.Begin("Expedition###ExpeditionMain", ref IsOpen, ImGuiWindowFlags.MenuBar))
