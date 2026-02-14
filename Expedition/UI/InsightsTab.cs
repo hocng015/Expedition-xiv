@@ -18,6 +18,10 @@ public static class InsightsTab
     private static int selectedSortMode;     // 0=Velocity, 1=Gil Volume, 2=Price
     private static int selectedCategoryIndex;
     private static int expandedItemIndex = -1;
+    private static int expandedEconomyIndex = -1;
+    private static int expandedCraftIndex = -1;
+    private static int expandedScripIndex = -1;
+    private static int expandedTrendIndex = -1;
 
     private static readonly string[] DcNames = { "Aether", "Primal", "Crystal", "Dynamis" };
     private static readonly string[] SortModeNames = { "Sale Velocity", "Gil Volume", "Average Price" };
@@ -146,6 +150,30 @@ public static class InsightsTab
             if (ImGui.BeginTabItem("Activity Feed"))
             {
                 DrawActivityFeed(engine);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Economy"))
+            {
+                DrawEconomy(engine);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Craft Profit"))
+            {
+                DrawCraftProfit(engine);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Scrip Exchange"))
+            {
+                DrawScripExchange(engine);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Weekly Trends"))
+            {
+                DrawWeeklyTrends(engine);
                 ImGui.EndTabItem();
             }
 
@@ -642,6 +670,468 @@ public static class InsightsTab
                 if (item.NqSaleVelocity > 0)
                     Theme.KeyValue("NQ Velocity: ", string.Concat(FormatNumber(item.NqSaleVelocity), "/day"), Theme.TextSecondary);
 
+                ImGui.Spacing();
+                ImGui.Unindent(40);
+                ImGui.Separator();
+            }
+
+            ImGui.PopID();
+        }
+
+        ImGui.EndChild();
+    }
+
+    // ──────────────────────────────────────────────
+    // Economy Sub-tab (Saddlebag Market Share)
+    // ──────────────────────────────────────────────
+
+    private static void DrawEconomy(InsightsEngine engine)
+    {
+        var snapshot = engine.CurrentSnapshot;
+        ImGui.Spacing();
+
+        if (snapshot.Saddlebag == null || snapshot.Saddlebag.MarketShare.Count == 0)
+        {
+            ImGui.TextColored(Theme.TextMuted, "No market share data available.");
+            ImGui.TextColored(Theme.TextMuted, "Data from Saddlebag Exchange will appear after the next refresh cycle.");
+            return;
+        }
+
+        Theme.SectionHeader("Market Share — Top Items by Market Value", Theme.Gold);
+        ImGui.Spacing();
+
+        ImGui.BeginChild("EconomyScroll", Vector2.Zero, false);
+
+        // Column headers
+        ImGui.TextColored(Theme.TextMuted, "#");
+        ImGui.SameLine(30);
+        ImGui.TextColored(Theme.TextMuted, "Item");
+        ImGui.SameLine(260);
+        ImGui.TextColored(Theme.TextMuted, "State");
+        ImGui.SameLine(360);
+        ImGui.TextColored(Theme.TextMuted, "Avg Price");
+        ImGui.SameLine(460);
+        ImGui.TextColored(Theme.TextMuted, "Qty Sold");
+        ImGui.SameLine(550);
+        ImGui.TextColored(Theme.TextMuted, "Market Value");
+        ImGui.SameLine(660);
+        ImGui.TextColored(Theme.TextMuted, "% Change");
+        ImGui.Separator();
+
+        var items = snapshot.Saddlebag.MarketShare;
+        for (var i = 0; i < items.Count; i++)
+        {
+            var item = items[i];
+            var isExpanded = expandedEconomyIndex == i;
+
+            ImGui.PushID(2000 + i);
+
+            // Rank
+            ImGui.TextColored(Theme.TextMuted, (i + 1).ToString());
+            ImGui.SameLine(30);
+
+            // Icon + Name
+            MainWindow.DrawGameIcon(item.IconId, IconSm);
+            ImGui.SameLine(0, Theme.PadSmall);
+
+            var cursorY = ImGui.GetCursorPosY();
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+
+            var nameText = string.IsNullOrEmpty(item.ItemName)
+                ? string.Concat("Item #", item.ItemId.ToString())
+                : item.ItemName;
+
+            if (ImGui.Selectable(string.Concat(nameText, "##eco", i.ToString()),
+                isExpanded, ImGuiSelectableFlags.None, new Vector2(180, 0)))
+            {
+                expandedEconomyIndex = isExpanded ? -1 : i;
+            }
+
+            // State badge with color
+            ImGui.SameLine(260);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            var stateColor = GetStateColor(item.State);
+            ImGui.TextColored(stateColor, item.State);
+
+            // Average price
+            ImGui.SameLine(360);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.Gold, FormatGil(item.AveragePrice));
+
+            // Quantity sold
+            ImGui.SameLine(460);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.TextPrimary, FormatNumber(item.QuantitySold));
+
+            // Market value
+            ImGui.SameLine(550);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.Success, FormatGil(item.MarketValue));
+
+            // Percent change
+            ImGui.SameLine(660);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            var pctColor = item.PercentChange >= 0 ? Theme.Success : Theme.Error;
+            var pctText = string.Concat(item.PercentChange >= 0 ? "+" : "", item.PercentChange.ToString("F1"), "%");
+            ImGui.TextColored(pctColor, pctText);
+
+            ImGui.SetCursorPosY(cursorY + IconSm.Y + 2);
+
+            // Expanded detail
+            if (isExpanded)
+            {
+                ImGui.Indent(40);
+                ImGui.Spacing();
+                Theme.KeyValue("Median Price: ", FormatGil(item.MedianPrice), Theme.TextPrimary);
+                Theme.KeyValue("Min Price: ", FormatGil(item.MinPrice), Theme.Success);
+                Theme.KeyValue("Home Min Price: ", FormatGil(item.HomeMinPrice), Theme.Accent);
+                Theme.KeyValue("Home Median: ", FormatGil(item.HomeMedianPrice), Theme.Accent);
+                ImGui.Spacing();
+                ImGui.Unindent(40);
+                ImGui.Separator();
+            }
+
+            ImGui.PopID();
+        }
+
+        ImGui.EndChild();
+    }
+
+    private static Vector4 GetStateColor(string state)
+    {
+        return state.ToLowerInvariant() switch
+        {
+            "crashing" => Theme.Error,
+            "decreasing" => new Vector4(1.0f, 0.5f, 0.3f, 1.0f),  // orange
+            "stable" => Theme.TextSecondary,
+            "increasing" => Theme.Success,
+            "spiking" => new Vector4(0.0f, 1.0f, 0.5f, 1.0f),     // bright green
+            "out of stock" => Theme.TextMuted,
+            _ => Theme.TextPrimary,
+        };
+    }
+
+    // ──────────────────────────────────────────────
+    // Craft Profit Sub-tab
+    // ──────────────────────────────────────────────
+
+    private static void DrawCraftProfit(InsightsEngine engine)
+    {
+        var snapshot = engine.CurrentSnapshot;
+        ImGui.Spacing();
+
+        if (snapshot.Saddlebag == null || snapshot.Saddlebag.CraftProfit.Count == 0)
+        {
+            ImGui.TextColored(Theme.TextMuted, "No craft profit data available.");
+            ImGui.TextColored(Theme.TextMuted, "Data from Saddlebag Exchange will appear after the next refresh cycle.");
+            return;
+        }
+
+        Theme.SectionHeader("Craft Profit Analysis — Most Profitable Crafts", Theme.Accent);
+        ImGui.Spacing();
+
+        ImGui.BeginChild("CraftProfitScroll", Vector2.Zero, false);
+
+        // Column headers
+        ImGui.TextColored(Theme.TextMuted, "#");
+        ImGui.SameLine(30);
+        ImGui.TextColored(Theme.TextMuted, "Item");
+        ImGui.SameLine(260);
+        ImGui.TextColored(Theme.TextMuted, "Job");
+        ImGui.SameLine(310);
+        ImGui.TextColored(Theme.TextMuted, "Revenue");
+        ImGui.SameLine(410);
+        ImGui.TextColored(Theme.TextMuted, "Cost");
+        ImGui.SameLine(500);
+        ImGui.TextColored(Theme.TextMuted, "Profit");
+        ImGui.SameLine(600);
+        ImGui.TextColored(Theme.TextMuted, "Margin");
+        ImGui.Separator();
+
+        var items = snapshot.Saddlebag.CraftProfit;
+        for (var i = 0; i < items.Count; i++)
+        {
+            var item = items[i];
+            var isExpanded = expandedCraftIndex == i;
+
+            ImGui.PushID(3000 + i);
+
+            // Rank
+            ImGui.TextColored(Theme.TextMuted, (i + 1).ToString());
+            ImGui.SameLine(30);
+
+            // Icon + Name
+            MainWindow.DrawGameIcon(item.IconId, IconSm);
+            ImGui.SameLine(0, Theme.PadSmall);
+
+            var cursorY = ImGui.GetCursorPosY();
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+
+            var nameText = string.IsNullOrEmpty(item.ItemName)
+                ? string.Concat("Item #", item.ItemId.ToString())
+                : item.ItemName;
+
+            if (ImGui.Selectable(string.Concat(nameText, "##craft", i.ToString()),
+                isExpanded, ImGuiSelectableFlags.None, new Vector2(180, 0)))
+            {
+                expandedCraftIndex = isExpanded ? -1 : i;
+            }
+
+            // Job
+            ImGui.SameLine(260);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.TextSecondary, item.Job);
+
+            // Revenue
+            ImGui.SameLine(310);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.Gold, FormatGil(item.Revenue));
+
+            // Cost
+            ImGui.SameLine(410);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.Error, FormatGil(item.CraftingCost));
+
+            // Profit
+            ImGui.SameLine(500);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            var profitColor = item.Profit >= 0 ? Theme.Success : Theme.Error;
+            ImGui.TextColored(profitColor, FormatGil(item.Profit));
+
+            // Margin %
+            ImGui.SameLine(600);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            var marginColor = item.ProfitPercent >= 50 ? Theme.Success
+                : item.ProfitPercent >= 20 ? Theme.Accent
+                : Theme.Warning;
+            ImGui.TextColored(marginColor, string.Concat(item.ProfitPercent.ToString("F0"), "%"));
+
+            ImGui.SetCursorPosY(cursorY + IconSm.Y + 2);
+
+            // Expanded detail
+            if (isExpanded)
+            {
+                ImGui.Indent(40);
+                ImGui.Spacing();
+                Theme.KeyValue("Median Price: ", FormatGil(item.MedianPrice), Theme.TextPrimary);
+                Theme.KeyValue("Min Price: ", FormatGil(item.MinPrice), Theme.Success);
+                Theme.KeyValue("Home Min Price: ", FormatGil(item.HomeMinPrice), Theme.Accent);
+                Theme.KeyValue("Avg Sold/Day: ", FormatNumber(item.AverageSold), Theme.TextPrimary);
+                Theme.KeyValue("Total Sales (7d): ", item.SalesAmount.ToString(), Theme.TextPrimary);
+                ImGui.Spacing();
+                ImGui.Unindent(40);
+                ImGui.Separator();
+            }
+
+            ImGui.PopID();
+        }
+
+        ImGui.EndChild();
+    }
+
+    // ──────────────────────────────────────────────
+    // Scrip Exchange Sub-tab
+    // ──────────────────────────────────────────────
+
+    private static void DrawScripExchange(InsightsEngine engine)
+    {
+        var snapshot = engine.CurrentSnapshot;
+        ImGui.Spacing();
+
+        if (snapshot.Saddlebag == null || snapshot.Saddlebag.ScripExchange.Count == 0)
+        {
+            ImGui.TextColored(Theme.TextMuted, "No scrip exchange data available.");
+            ImGui.TextColored(Theme.TextMuted, "Data from Saddlebag Exchange will appear after the next refresh cycle.");
+            return;
+        }
+
+        Theme.SectionHeader("Scrip Exchange — Best Gil per Scrip", Theme.Collectable);
+        ImGui.Spacing();
+
+        ImGui.BeginChild("ScripScroll", Vector2.Zero, false);
+
+        // Column headers
+        ImGui.TextColored(Theme.TextMuted, "#");
+        ImGui.SameLine(30);
+        ImGui.TextColored(Theme.TextMuted, "Item");
+        ImGui.SameLine(260);
+        ImGui.TextColored(Theme.TextMuted, "Scrip Cost");
+        ImGui.SameLine(370);
+        ImGui.TextColored(Theme.TextMuted, "Market Price");
+        ImGui.SameLine(490);
+        ImGui.TextColored(Theme.TextMuted, "Gil/Scrip");
+        ImGui.SameLine(590);
+        ImGui.TextColored(Theme.TextMuted, "Qty Sold");
+        ImGui.Separator();
+
+        var items = snapshot.Saddlebag.ScripExchange;
+        for (var i = 0; i < items.Count; i++)
+        {
+            var item = items[i];
+            var isExpanded = expandedScripIndex == i;
+
+            ImGui.PushID(4000 + i);
+
+            // Rank
+            ImGui.TextColored(Theme.TextMuted, (i + 1).ToString());
+            ImGui.SameLine(30);
+
+            // Icon + Name
+            MainWindow.DrawGameIcon(item.IconId, IconSm);
+            ImGui.SameLine(0, Theme.PadSmall);
+
+            var cursorY = ImGui.GetCursorPosY();
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+
+            var nameText = string.IsNullOrEmpty(item.ItemName)
+                ? string.Concat("Item #", item.ItemId.ToString())
+                : item.ItemName;
+
+            if (ImGui.Selectable(string.Concat(nameText, "##scrip", i.ToString()),
+                isExpanded, ImGuiSelectableFlags.None, new Vector2(180, 0)))
+            {
+                expandedScripIndex = isExpanded ? -1 : i;
+            }
+
+            // Scrip cost
+            ImGui.SameLine(260);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.Collectable, item.ScripCost.ToString());
+
+            // Market price
+            ImGui.SameLine(370);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.Gold, FormatGil(item.MarketPrice));
+
+            // Gil per scrip
+            ImGui.SameLine(490);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            var gilPerColor = item.GilPerScrip >= 200 ? Theme.Success
+                : item.GilPerScrip >= 100 ? Theme.Accent
+                : Theme.Warning;
+            ImGui.TextColored(gilPerColor, FormatGil(item.GilPerScrip));
+
+            // Quantity sold
+            ImGui.SameLine(590);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.TextPrimary, FormatNumber(item.QuantitySold));
+
+            ImGui.SetCursorPosY(cursorY + IconSm.Y + 2);
+
+            // Expanded detail
+            if (isExpanded)
+            {
+                ImGui.Indent(40);
+                ImGui.Spacing();
+                Theme.KeyValue("Min Price: ", FormatGil(item.MinPrice), Theme.Success);
+                Theme.KeyValue("Home Min Price: ", FormatGil(item.HomeMinPrice), Theme.Accent);
+                ImGui.Spacing();
+                ImGui.Unindent(40);
+                ImGui.Separator();
+            }
+
+            ImGui.PopID();
+        }
+
+        ImGui.EndChild();
+    }
+
+    // ──────────────────────────────────────────────
+    // Weekly Trends Sub-tab
+    // ──────────────────────────────────────────────
+
+    private static void DrawWeeklyTrends(InsightsEngine engine)
+    {
+        var snapshot = engine.CurrentSnapshot;
+        ImGui.Spacing();
+
+        if (snapshot.Saddlebag == null || snapshot.Saddlebag.WeeklyTrends.Count == 0)
+        {
+            ImGui.TextColored(Theme.TextMuted, "No weekly trend data available.");
+            ImGui.TextColored(Theme.TextMuted, "Data from Saddlebag Exchange will appear after the next refresh cycle.");
+            return;
+        }
+
+        Theme.SectionHeader("Weekly Price Trends — 7 Day Price Movement", Theme.Warning);
+        ImGui.Spacing();
+
+        ImGui.BeginChild("TrendsScroll", Vector2.Zero, false);
+
+        // Column headers
+        ImGui.TextColored(Theme.TextMuted, "#");
+        ImGui.SameLine(30);
+        ImGui.TextColored(Theme.TextMuted, "Item");
+        ImGui.SameLine(260);
+        ImGui.TextColored(Theme.TextMuted, "Current Avg");
+        ImGui.SameLine(380);
+        ImGui.TextColored(Theme.TextMuted, "Previous Avg");
+        ImGui.SameLine(500);
+        ImGui.TextColored(Theme.TextMuted, "Delta");
+        ImGui.SameLine(600);
+        ImGui.TextColored(Theme.TextMuted, "% Change");
+        ImGui.Separator();
+
+        var items = snapshot.Saddlebag.WeeklyTrends;
+        for (var i = 0; i < items.Count; i++)
+        {
+            var item = items[i];
+            var isExpanded = expandedTrendIndex == i;
+
+            ImGui.PushID(5000 + i);
+
+            // Rank
+            ImGui.TextColored(Theme.TextMuted, (i + 1).ToString());
+            ImGui.SameLine(30);
+
+            // Icon + Name
+            MainWindow.DrawGameIcon(item.IconId, IconSm);
+            ImGui.SameLine(0, Theme.PadSmall);
+
+            var cursorY = ImGui.GetCursorPosY();
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+
+            var nameText = string.IsNullOrEmpty(item.ItemName)
+                ? string.Concat("Item #", item.ItemId.ToString())
+                : item.ItemName;
+
+            if (ImGui.Selectable(string.Concat(nameText, "##trend", i.ToString()),
+                isExpanded, ImGuiSelectableFlags.None, new Vector2(180, 0)))
+            {
+                expandedTrendIndex = isExpanded ? -1 : i;
+            }
+
+            // Current average
+            ImGui.SameLine(260);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.Gold, FormatGil(item.CurrentAverage));
+
+            // Previous average
+            ImGui.SameLine(380);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            ImGui.TextColored(Theme.TextSecondary, FormatGil(item.PreviousAverage));
+
+            // Delta
+            ImGui.SameLine(500);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            var deltaColor = item.PriceDelta >= 0 ? Theme.Success : Theme.Error;
+            var deltaPrefix = item.PriceDelta >= 0 ? "+" : "";
+            ImGui.TextColored(deltaColor, string.Concat(deltaPrefix, FormatGil(item.PriceDelta)));
+
+            // Percent change
+            ImGui.SameLine(600);
+            ImGui.SetCursorPosY(cursorY + (IconSm.Y - ImGui.GetTextLineHeight()) / 2);
+            var pctColor = item.PercentChange >= 0 ? Theme.Success : Theme.Error;
+            var pctPrefix = item.PercentChange >= 0 ? "+" : "";
+            ImGui.TextColored(pctColor, string.Concat(pctPrefix, item.PercentChange.ToString("F1"), "%"));
+
+            ImGui.SetCursorPosY(cursorY + IconSm.Y + 2);
+
+            // Expanded detail
+            if (isExpanded)
+            {
+                ImGui.Indent(40);
+                ImGui.Spacing();
+                Theme.KeyValue("Sales Amount (7d): ", item.SalesAmount.ToString(), Theme.TextPrimary);
                 ImGui.Spacing();
                 ImGui.Unindent(40);
                 ImGui.Separator();

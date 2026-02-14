@@ -278,6 +278,14 @@ public sealed class InsightsEngine : IDisposable
         DalamudApi.Log.Information(
             $"[Insights] Parsed snapshot: {totalItems} items, {categorySummaries.Count} categories, {recentActivity.Count} activity entries");
 
+        // Parse Saddlebag Exchange analytics if present
+        SaddlebagData? saddlebag = null;
+        if (root.TryGetProperty("saddlebag", out var sbEl) &&
+            sbEl.ValueKind == JsonValueKind.Object)
+        {
+            saddlebag = ParseSaddlebagData(sbEl);
+        }
+
         return new InsightsSnapshot
         {
             FetchedAt = DateTime.UtcNow,
@@ -288,6 +296,7 @@ public sealed class InsightsEngine : IDisposable
             CategorySummaries = categorySummaries,
             ItemsByCategory = itemsByCategory,
             RecentActivity = recentActivity,
+            Saddlebag = saddlebag,
         };
     }
 
@@ -356,6 +365,159 @@ public sealed class InsightsEngine : IDisposable
         => el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String
             ? v.GetString() ?? string.Empty
             : string.Empty;
+
+    // ──────────────────────────────────────────────
+    // Saddlebag Exchange Parsing
+    // ──────────────────────────────────────────────
+
+    private SaddlebagData ParseSaddlebagData(JsonElement sbEl)
+    {
+        var data = new SaddlebagData
+        {
+            MarketShare = ParseMarketShareList(sbEl),
+            CraftProfit = ParseCraftProfitList(sbEl),
+            ScripExchange = ParseScripExchangeList(sbEl),
+            WeeklyTrends = ParseWeeklyTrendsList(sbEl),
+        };
+
+        DalamudApi.Log.Information(
+            $"[Insights] Saddlebag parsed: {data.MarketShare.Count} market share, " +
+            $"{data.CraftProfit.Count} craft profit, {data.ScripExchange.Count} scrip, " +
+            $"{data.WeeklyTrends.Count} weekly trends");
+
+        return data;
+    }
+
+    private List<SaddlebagMarketShareItem> ParseMarketShareList(JsonElement sbEl)
+    {
+        var items = new List<SaddlebagMarketShareItem>();
+        if (!sbEl.TryGetProperty("market_share", out var arrEl) ||
+            arrEl.ValueKind != JsonValueKind.Array)
+            return items;
+
+        foreach (var el in arrEl.EnumerateArray())
+        {
+            var itemId = (uint)GetInt(el, "itemID");
+            var item = new SaddlebagMarketShareItem
+            {
+                ItemName = GetString(el, "name"),
+                ItemId = itemId,
+                State = GetString(el, "state"),
+                AveragePrice = GetFloat(el, "avgPrice"),
+                MedianPrice = GetFloat(el, "medianPrice"),
+                MinPrice = GetFloat(el, "minPrice"),
+                MarketValue = GetFloat(el, "marketValue"),
+                QuantitySold = GetInt(el, "quantitySold"),
+                PercentChange = GetFloat(el, "percentChange"),
+                HomeMinPrice = GetFloat(el, "homeMinPrice"),
+                HomeMedianPrice = GetFloat(el, "homeMedian"),
+            };
+            EnrichItemIcon(item.ItemId, out var iconId);
+            item.IconId = iconId;
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    private List<SaddlebagCraftProfitItem> ParseCraftProfitList(JsonElement sbEl)
+    {
+        var items = new List<SaddlebagCraftProfitItem>();
+        if (!sbEl.TryGetProperty("craft_profit", out var arrEl) ||
+            arrEl.ValueKind != JsonValueKind.Array)
+            return items;
+
+        foreach (var el in arrEl.EnumerateArray())
+        {
+            var itemId = (uint)GetInt(el, "itemID");
+            var item = new SaddlebagCraftProfitItem
+            {
+                ItemName = GetString(el, "name"),
+                ItemId = itemId,
+                Revenue = GetFloat(el, "revenue"),
+                CraftingCost = GetFloat(el, "craftingCost"),
+                Profit = GetFloat(el, "profit"),
+                ProfitPercent = GetFloat(el, "profitPct"),
+                AverageSold = GetFloat(el, "avgSold"),
+                MedianPrice = GetFloat(el, "medianPrice"),
+                MinPrice = GetFloat(el, "minPrice"),
+                HomeMinPrice = GetFloat(el, "homeMinPrice"),
+                SalesAmount = GetInt(el, "salesAmount"),
+                Job = GetString(el, "job"),
+            };
+            EnrichItemIcon(item.ItemId, out var iconId);
+            item.IconId = iconId;
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    private List<SaddlebagScripItem> ParseScripExchangeList(JsonElement sbEl)
+    {
+        var items = new List<SaddlebagScripItem>();
+        if (!sbEl.TryGetProperty("scrip_exchange", out var arrEl) ||
+            arrEl.ValueKind != JsonValueKind.Array)
+            return items;
+
+        foreach (var el in arrEl.EnumerateArray())
+        {
+            var itemId = (uint)GetInt(el, "itemID");
+            var item = new SaddlebagScripItem
+            {
+                ItemName = GetString(el, "name"),
+                ItemId = itemId,
+                ScripCost = GetInt(el, "scripCost"),
+                MarketPrice = GetFloat(el, "marketPrice"),
+                MinPrice = GetFloat(el, "minPrice"),
+                HomeMinPrice = GetFloat(el, "homeMinPrice"),
+                GilPerScrip = GetFloat(el, "gilPerScrip"),
+                QuantitySold = GetInt(el, "quantitySold"),
+            };
+            EnrichItemIcon(item.ItemId, out var iconId);
+            item.IconId = iconId;
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    private List<SaddlebagWeeklyTrendItem> ParseWeeklyTrendsList(JsonElement sbEl)
+    {
+        var items = new List<SaddlebagWeeklyTrendItem>();
+        if (!sbEl.TryGetProperty("weekly_trends", out var arrEl) ||
+            arrEl.ValueKind != JsonValueKind.Array)
+            return items;
+
+        foreach (var el in arrEl.EnumerateArray())
+        {
+            var itemId = (uint)GetInt(el, "itemID");
+            var item = new SaddlebagWeeklyTrendItem
+            {
+                ItemName = GetString(el, "name"),
+                ItemId = itemId,
+                CurrentAverage = GetFloat(el, "currentAvg"),
+                PreviousAverage = GetFloat(el, "previousAvg"),
+                PriceDelta = GetFloat(el, "priceDelta"),
+                PercentChange = GetFloat(el, "percentChange"),
+                SalesAmount = GetInt(el, "salesAmount"),
+            };
+            EnrichItemIcon(item.ItemId, out var iconId);
+            item.IconId = iconId;
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    private void EnrichItemIcon(uint itemId, out uint iconId)
+    {
+        iconId = 0;
+        if (itemId == 0) return;
+        var item = itemSheet.GetRowOrDefault(itemId);
+        if (item == null) return;
+        iconId = (uint)item.Value.Icon;
+    }
 
     public void Dispose()
     {

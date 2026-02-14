@@ -111,7 +111,99 @@ public sealed class InsightsSnapshot
     // Activity feed
     public List<RecentlyUpdatedItem> RecentActivity { get; init; } = new();
 
+    // Saddlebag Exchange analytics
+    public SaddlebagData? Saddlebag { get; init; }
+
     // Status
     public bool IsLoading { get; init; }
     public string? ErrorMessage { get; init; }
+}
+
+// ──────────────────────────────────────────────
+// Saddlebag Exchange Data Models
+// ──────────────────────────────────────────────
+
+/// <summary>
+/// Complete Saddlebag Exchange analytics bundle for a data center.
+/// </summary>
+public sealed class SaddlebagData
+{
+    public List<SaddlebagMarketShareItem> MarketShare { get; init; } = new();
+    public List<SaddlebagCraftProfitItem> CraftProfit { get; init; } = new();
+    public List<SaddlebagScripItem> ScripExchange { get; init; } = new();
+    public List<SaddlebagWeeklyTrendItem> WeeklyTrends { get; init; } = new();
+}
+
+/// <summary>
+/// Market share item from /api/ffxivmarketshare.
+/// Includes price state: Crashing, Decreasing, Stable, Increasing, Spiking, Out of Stock.
+/// </summary>
+public sealed class SaddlebagMarketShareItem
+{
+    public string ItemName { get; init; } = string.Empty;
+    public uint ItemId { get; init; }
+    public uint IconId { get; set; }
+    public string State { get; init; } = string.Empty;
+    public float AveragePrice { get; init; }
+    public float MedianPrice { get; init; }
+    public float MinPrice { get; init; }
+    public float MarketValue { get; init; }
+    public int QuantitySold { get; init; }
+    public float PercentChange { get; init; }
+    public float HomeMinPrice { get; init; }
+    public float HomeMedianPrice { get; init; }
+}
+
+/// <summary>
+/// Craft profit item from /api/v2/craftsim.
+/// Shows crafting cost vs market revenue for profit analysis.
+/// </summary>
+public sealed class SaddlebagCraftProfitItem
+{
+    public string ItemName { get; init; } = string.Empty;
+    public uint ItemId { get; init; }
+    public uint IconId { get; set; }
+    public float Revenue { get; init; }
+    public float CraftingCost { get; init; }
+    public float Profit { get; init; }
+    public float ProfitPercent { get; init; }
+    public float AverageSold { get; init; }
+    public float MedianPrice { get; init; }
+    public float MinPrice { get; init; }
+    public float HomeMinPrice { get; init; }
+    public int SalesAmount { get; init; }
+    public string Job { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// Scrip exchange item from /api/ffxiv/scripexchange.
+/// Shows how much gil you get per scrip spent.
+/// </summary>
+public sealed class SaddlebagScripItem
+{
+    public string ItemName { get; init; } = string.Empty;
+    public uint ItemId { get; init; }
+    public uint IconId { get; set; }
+    public int ScripCost { get; init; }
+    public float MarketPrice { get; init; }
+    public float MinPrice { get; init; }
+    public float HomeMinPrice { get; init; }
+    public float GilPerScrip { get; init; }
+    public int QuantitySold { get; init; }
+}
+
+/// <summary>
+/// Weekly price trend item from /api/ffxiv/weekly-price-group-delta.
+/// Shows price movement over the past week.
+/// </summary>
+public sealed class SaddlebagWeeklyTrendItem
+{
+    public string ItemName { get; init; } = string.Empty;
+    public uint ItemId { get; init; }
+    public uint IconId { get; set; }
+    public float CurrentAverage { get; init; }
+    public float PreviousAverage { get; init; }
+    public float PriceDelta { get; init; }
+    public float PercentChange { get; init; }
+    public int SalesAmount { get; init; }
 }
