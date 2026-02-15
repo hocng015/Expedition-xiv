@@ -526,12 +526,14 @@ public sealed class MainWindow
                 .GetWrapOrDefault();
 
             var clicked = false;
-            ImGui.PushID($"doh{i}");
             if (wrap != null)
-                clicked = ImGui.ImageButton(wrap.Handle, iconSize);
+                clicked = ImGui.ImageButton($"doh{i}", wrap.Handle, iconSize);
             else
+            {
+                ImGui.PushID($"doh{i}");
                 clicked = ImGui.Button(classNames[i], new Vector2(iconSize.X + 8, iconSize.Y + 8));
-            ImGui.PopID();
+                ImGui.PopID();
+            }
 
             if (ImGui.IsItemHovered())
             {
@@ -594,12 +596,14 @@ public sealed class MainWindow
                 .GetWrapOrDefault();
 
             var clicked = false;
-            ImGui.PushID($"dol{i}");
             if (wrap != null)
-                clicked = ImGui.ImageButton(wrap.Handle, iconSize);
+                clicked = ImGui.ImageButton($"dol{i}", wrap.Handle, iconSize);
             else
+            {
+                ImGui.PushID($"dol{i}");
                 clicked = ImGui.Button(gc.Name, new Vector2(iconSize.X + 8, iconSize.Y + 8));
-            ImGui.PopID();
+                ImGui.PopID();
+            }
 
             if (ImGui.IsItemHovered())
             {
