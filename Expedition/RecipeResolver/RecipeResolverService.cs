@@ -138,6 +138,57 @@ public sealed class RecipeResolverService
     }
 
     /// <summary>
+    /// Searches gatherable items by name (case-insensitive partial match).
+    /// </summary>
+    public List<GatherableItemInfo> SearchGatherItems(string query, int maxResults = 50)
+    {
+        var results = new List<GatherableItemInfo>();
+        var normalizedQuery = query.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(normalizedQuery)) return results;
+
+        foreach (var kvp in gatherItemInfo)
+        {
+            if (results.Count >= maxResults) break;
+
+            var itemId = kvp.Key;
+            var (type, level) = kvp.Value;
+
+            if (type == GatherType.Unknown || type == GatherType.None)
+                continue;
+
+            var itemRow = itemSheet.GetRowOrDefault(itemId);
+            if (itemRow == null) continue;
+
+            var name = itemRow.Value.Name.ExtractText();
+            if (string.IsNullOrEmpty(name)) continue;
+
+            if (!name.ToLowerInvariant().Contains(normalizedQuery))
+                continue;
+
+            results.Add(new GatherableItemInfo
+            {
+                ItemId = itemId,
+                ItemName = name,
+                IconId = (uint)itemRow.Value.Icon,
+                GatherClass = type,
+                GatherLevel = level,
+                IsCollectable = itemRow.Value.IsCollectable,
+                IsCrystal = IsCrystalItem(name),
+                IsAlsoCraftable = recipesByItemId.ContainsKey(itemId),
+                ItemLevel = itemRow.Value.LevelItem.RowId > 0 ? (int)itemRow.Value.LevelItem.RowId : 0,
+            });
+        }
+
+        results.Sort((a, b) =>
+        {
+            var levelCmp = a.GatherLevel.CompareTo(b.GatherLevel);
+            return levelCmp != 0 ? levelCmp : string.Compare(a.ItemName, b.ItemName, StringComparison.Ordinal);
+        });
+
+        return results;
+    }
+
+    /// <summary>
     /// Browses recipes with filtering by craft class, level range, and special properties.
     /// </summary>
     public List<RecipeNode> BrowseRecipes(

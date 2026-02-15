@@ -31,6 +31,23 @@ public sealed class GatheringOrchestrator
     private bool listInjected;
 
     /// <summary>
+    /// True when the current task's item couldn't be added to GBR's auto-gather list
+    /// (e.g., crystals not in GBR's Gatherables dictionary). In this mode we rely on
+    /// periodic /gather commands instead of AutoGather list-driven gathering.
+    /// </summary>
+    private bool commandOnlyMode;
+
+    /// <summary>
+    /// How often to re-issue the /gather command in command-only mode.
+    /// GBR's /gather navigates to the item and gathers one node cycle,
+    /// so we need to periodically re-send it for continued gathering.
+    /// </summary>
+    private const double CommandReissueIntervalSeconds = 30.0;
+
+    /// <summary>When we last sent a /gather command in command-only mode.</summary>
+    private DateTime lastCommandReissueTime = DateTime.MinValue;
+
+    /// <summary>
     /// How long to wait with no inventory progress before declaring a task stalled.
     /// This needs to be generous to account for teleport, travel time, and node respawns.
     /// </summary>
@@ -213,8 +230,8 @@ public sealed class GatheringOrchestrator
             return;
         }
 
-        // Check inventory to see if we've gathered enough
-        var currentCount = inventoryManager.GetItemCount(task.ItemId);
+        // Check inventory to see if we've gathered enough (include saddlebag to match StartGather's count)
+        var currentCount = inventoryManager.GetItemCount(task.ItemId, includeSaddlebag: Expedition.Config.IncludeSaddlebagInScans);
         task.QuantityGathered = currentCount;
 
         // Track progress — reset the stall timer whenever inventory increases
@@ -271,7 +288,42 @@ public sealed class GatheringOrchestrator
         var gbrWaiting = ipc.GatherBuddy.GetAutoGatherWaiting();
         var playerOccupied = IsPlayerOccupied();
 
-        if (!gbrEnabled)
+        if (commandOnlyMode)
+        {
+            // Command-only mode: item wasn't in GBR's auto-gather list.
+            // We rely on /gather commands to drive GBR. Re-issue periodically
+            // and re-enable AutoGather if it disables itself.
+            if (!playerOccupied)
+            {
+                var sinceLastCommand = (DateTime.Now - lastCommandReissueTime).TotalSeconds;
+
+                if (!gbrEnabled && sinceLastCommand >= AutoGatherReEnableIntervalSeconds)
+                {
+                    DalamudApi.Log.Information(
+                        $"[Command-only] GBR is OFF — re-issuing /gather for {task.ItemName} " +
+                        $"(need {task.QuantityRemaining} more)");
+                    ChatIpc.GatherItem(task.ItemName);
+                    ipc.GatherBuddy.SetAutoGatherEnabled(true);
+                    lastCommandReissueTime = DateTime.Now;
+                }
+                else if (gbrEnabled && sinceLastCommand >= CommandReissueIntervalSeconds)
+                {
+                    // Periodically re-issue /gather to keep GBR targeted on the right item
+                    // (GBR may finish a node cycle and go idle without an auto-gather list entry)
+                    if (gbrWaiting)
+                    {
+                        DalamudApi.Log.Debug($"[Command-only] GBR waiting, re-issuing /gather for {task.ItemName}");
+                        ChatIpc.GatherItem(task.ItemName);
+                        lastCommandReissueTime = DateTime.Now;
+                    }
+                }
+            }
+            else
+            {
+                StatusMessage = $"Waiting for player to be free before gathering {task.ItemName}...";
+            }
+        }
+        else if (!gbrEnabled)
         {
             gbrIdlePolls++;
             consecutiveReEnableFailures++;
@@ -356,8 +408,9 @@ public sealed class GatheringOrchestrator
 
         // Update status message with GBR state info
         var elapsed = (DateTime.Now - taskStartTime).TotalSeconds;
-        var gbrStatus = !gbrEnabled ? " [GBR: OFF — re-enabling]" :
-                        gbrWaiting  ? " [GBR: Waiting]" : "";
+        var cmdTag = commandOnlyMode ? " [cmd]" : "";
+        var gbrStatus = !gbrEnabled ? $" [GBR: OFF — re-enabling]{cmdTag}" :
+                        gbrWaiting  ? $" [GBR: Waiting]{cmdTag}" : cmdTag;
 
         if (task.IsTimedNode && task.SpawnHours != null)
         {
@@ -505,6 +558,16 @@ public sealed class GatheringOrchestrator
         lastAutoGatherCheck = DateTime.MinValue;
         finishingNodeSince = null;
 
+        // Check if this item was skipped during list injection (not in GBR's Gatherables).
+        // Common for crystals/shards/clusters which GBR indexes differently.
+        commandOnlyMode = ipc.GatherBuddyLists.SkippedItemIds.Contains(task.ItemId);
+        lastCommandReissueTime = DateTime.MinValue;
+
+        if (commandOnlyMode)
+        {
+            DalamudApi.Log.Information($"Item {task.ItemName} not in GBR auto-gather list — using command-only gathering mode.");
+        }
+
         // Don't fire gather commands while the player is occupied —
         // the Update loop will re-enable once the player is free.
         if (IsPlayerOccupied())
@@ -514,8 +577,12 @@ public sealed class GatheringOrchestrator
             return;
         }
 
-        // Send the class-specific gather command to hint GBR and trigger teleport
-        SendGatherCommand(task);
+        // Send the gather command to hint GBR and trigger teleport.
+        // In command-only mode, use the generic /gather to let GBR pick the best class.
+        if (commandOnlyMode)
+            ChatIpc.GatherItem(task.ItemName);
+        else
+            SendGatherCommand(task);
 
         if (task.IsCollectable)
         {
@@ -524,8 +591,11 @@ public sealed class GatheringOrchestrator
 
         // Enable AutoGather — with items in the injected list, GBR will
         // automatically path to nodes and gather via vnavmesh.
+        // In command-only mode, also enable it: the /gather command sets GBR's
+        // target, and AutoGather keeps it running after the first node.
         ipc.GatherBuddy.SetAutoGatherEnabled(true);
 
+        lastCommandReissueTime = DateTime.Now;
         StatusMessage = $"Gathering {task.ItemName} (need {task.QuantityRemaining} more)...";
         DalamudApi.Log.Information(StatusMessage);
     }

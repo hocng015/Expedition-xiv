@@ -42,6 +42,13 @@ public sealed class GatherBuddyListManager
     public string LastError { get; private set; } = string.Empty;
 
     /// <summary>
+    /// Item IDs that were skipped during the last SetGatherList call because
+    /// they couldn't be found in GBR's Gatherables/Fishes dictionaries.
+    /// The orchestrator uses this to fall back to command-only gathering for these items.
+    /// </summary>
+    public HashSet<uint> SkippedItemIds { get; } = new();
+
+    /// <summary>
     /// Initializes reflection handles to GBR's internal types.
     /// Must be called after GBR is loaded.
     /// </summary>
@@ -168,6 +175,7 @@ public sealed class GatherBuddyListManager
         {
             // Remove any existing Expedition list first
             RemoveExpeditionList();
+            SkippedItemIds.Clear();
 
             if (items.Count == 0)
                 return true;
@@ -193,7 +201,8 @@ public sealed class GatherBuddyListManager
                 var gatherable = LookupGatherable(gatherablesDict, fishesDict, itemId);
                 if (gatherable == null)
                 {
-                    DalamudApi.Log.Debug($"Item {itemId} not found in GBR gatherables/fishes, skipping.");
+                    DalamudApi.Log.Warning($"Item {itemId} not found in GBR gatherables/fishes — will use command-only gathering.");
+                    SkippedItemIds.Add(itemId);
                     continue;
                 }
 
@@ -208,7 +217,8 @@ public sealed class GatherBuddyListManager
                         foreach (var _ in enumerable) { hasAny = true; break; }
                         if (!hasAny)
                         {
-                            DalamudApi.Log.Debug($"Item {itemId} has no gathering locations, skipping.");
+                            DalamudApi.Log.Warning($"Item {itemId} has no gathering locations in GBR — will use command-only gathering.");
+                            SkippedItemIds.Add(itemId);
                             continue;
                         }
                     }
@@ -218,7 +228,10 @@ public sealed class GatherBuddyListManager
                 if (result is true)
                     addedCount++;
                 else
-                    DalamudApi.Log.Debug($"Failed to add item {itemId} to GBR list.");
+                {
+                    DalamudApi.Log.Warning($"Failed to add item {itemId} to GBR list — will use command-only gathering.");
+                    SkippedItemIds.Add(itemId);
+                }
             }
 
             if (addedCount == 0)

@@ -282,60 +282,57 @@ public static class InsightsTab
     {
         var count = Math.Min(5, snapshot.HottestItems.Count);
         var avail = ImGui.GetContentRegionAvail().X;
-        var itemWidth = (avail - (count - 1) * Theme.Pad) / count;
-        if (itemWidth < 100) itemWidth = 100;
+        var lineH = ImGui.GetTextLineHeight();
+
+        // Column header row
+        ImGui.TextColored(Theme.TextMuted, "#");
+        ImGui.SameLine(40);
+        ImGui.TextColored(Theme.TextMuted, "Item");
+        ImGui.SameLine(avail * 0.38f);
+        ImGui.TextColored(Theme.TextMuted, "Sale Velocity");
+        ImGui.SameLine(avail * 0.58f);
+        ImGui.TextColored(Theme.TextMuted, "Gil Volume");
+        ImGui.SameLine(avail * 0.78f);
+        ImGui.TextColored(Theme.TextMuted, "Avg Price");
+        ImGui.Separator();
 
         for (var i = 0; i < count; i++)
         {
             var item = snapshot.HottestItems[i];
 
-            if (i > 0) ImGui.SameLine(0, Theme.Pad);
-
             ImGui.PushID(1000 + i);
-            ImGui.BeginGroup();
 
-            var pos = ImGui.GetCursorScreenPos();
-            var drawList = ImGui.GetWindowDrawList();
-            var cardH = 80f;
+            // Rank
+            ImGui.TextColored(Theme.TextMuted, (i + 1).ToString());
+            ImGui.SameLine(40);
 
-            // Card background with subtle left accent
-            drawList.AddRectFilled(
-                pos,
-                new Vector2(pos.X + itemWidth, pos.Y + cardH),
-                ImGui.ColorConvertFloat4ToU32(Theme.CardBg),
-                4f);
-            drawList.AddRectFilled(
-                pos,
-                new Vector2(pos.X + 3, pos.Y + cardH),
-                ImGui.ColorConvertFloat4ToU32(Theme.Accent),
-                4f);
+            // Icon + Name
+            MainWindow.DrawGameIcon(item.IconId, IconRow);
+            ImGui.SameLine(0, Theme.PadSmall);
 
-            // Rank badge top-right
-            var rankText = string.Concat("#", (i + 1).ToString());
-            var rankSize = ImGui.CalcTextSize(rankText);
-            drawList.AddText(
-                new Vector2(pos.X + itemWidth - rankSize.X - Theme.PadSmall, pos.Y + Theme.PadSmall),
-                ImGui.ColorConvertFloat4ToU32(Theme.TextMuted), rankText);
+            var cursorY = ImGui.GetCursorPosY();
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - lineH) / 2);
 
-            // Icon + name
-            ImGui.SetCursorScreenPos(new Vector2(pos.X + Theme.Pad, pos.Y + Theme.PadSmall));
-            MainWindow.DrawGameIcon(item.IconId, IconMd);
-            ImGui.SetCursorScreenPos(new Vector2(pos.X + Theme.Pad + IconMd.X + Theme.PadSmall, pos.Y + Theme.PadSmall));
             var nameText = string.IsNullOrEmpty(item.ItemName) ? string.Concat("Item #", item.ItemId.ToString()) : item.ItemName;
-            // Truncate long names
-            if (nameText.Length > 14) nameText = string.Concat(nameText.AsSpan(0, 12), "..");
             ImGui.TextColored(Theme.TextPrimary, nameText);
 
-            // Velocity stat below name
-            ImGui.SetCursorScreenPos(new Vector2(pos.X + Theme.Pad + IconMd.X + Theme.PadSmall, pos.Y + Theme.PadSmall + ImGui.GetTextLineHeightWithSpacing()));
-            ImGui.TextColored(Theme.Accent, string.Concat(FormatNumber(item.RegularSaleVelocity), "/day"));
+            // Velocity
+            ImGui.SameLine(avail * 0.38f);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - lineH) / 2);
+            DrawBoxedValue(string.Concat(FormatNumber(item.RegularSaleVelocity), "/day"), Theme.Accent);
 
-            // Gil volume at bottom of card
-            ImGui.SetCursorScreenPos(new Vector2(pos.X + Theme.Pad, pos.Y + cardH - ImGui.GetTextLineHeight() - Theme.PadSmall));
-            ImGui.TextColored(Theme.Success, string.Concat(FormatGil(item.EstimatedDailyGilVolume), " gil/day"));
+            // Gil volume
+            ImGui.SameLine(avail * 0.58f);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - lineH) / 2);
+            DrawBoxedValue(string.Concat(FormatGil(item.EstimatedDailyGilVolume), " gil/day"), Theme.Success);
 
-            ImGui.SetCursorScreenPos(new Vector2(pos.X, pos.Y + cardH));
-            ImGui.EndGroup();
+            // Avg price
+            ImGui.SameLine(avail * 0.78f);
+            ImGui.SetCursorPosY(cursorY + (IconRow.Y - lineH) / 2);
+            DrawBoxedValue(FormatGil(item.CurrentAveragePrice), Theme.Gold);
+
+            ImGui.SetCursorPosY(cursorY + IconRow.Y + 4);
+
             ImGui.PopID();
         }
         ImGui.Spacing();
@@ -380,16 +377,14 @@ public static class InsightsTab
         var midX = pos.X + avail * 0.30f;
         drawList.AddText(new Vector2(midX, topY),
             ImGui.ColorConvertFloat4ToU32(Theme.TextSecondary), "Daily Volume");
-        drawList.AddText(new Vector2(midX, subY),
-            ImGui.ColorConvertFloat4ToU32(Theme.Accent),
-            string.Concat("~", FormatNumber(cat.TotalDailyVelocity), " units"));
+        DrawBoxedValueAt(drawList, new Vector2(midX, subY),
+            string.Concat("~", FormatNumber(cat.TotalDailyVelocity), " units"), Theme.Accent);
 
         var gilX = pos.X + avail * 0.52f;
         drawList.AddText(new Vector2(gilX, topY),
             ImGui.ColorConvertFloat4ToU32(Theme.TextSecondary), "Gil Volume");
-        drawList.AddText(new Vector2(gilX, subY),
-            ImGui.ColorConvertFloat4ToU32(Theme.Success),
-            string.Concat("~", FormatGil(cat.EstimatedDailyGilVolume)));
+        DrawBoxedValueAt(drawList, new Vector2(gilX, subY),
+            string.Concat("~", FormatGil(cat.EstimatedDailyGilVolume)), Theme.Success);
 
         // ── Right section: top item with icon ──
         if (cat.TopItem != null)
@@ -1168,6 +1163,26 @@ public static class InsightsTab
         drawList.AddText(new Vector2(pos.X + padding.X, pos.Y + padding.Y),
             ImGui.ColorConvertFloat4ToU32(color), text);
         ImGui.Dummy(new Vector2(textSize.X + padding.X * 2, textSize.Y + padding.Y * 2));
+    }
+
+    /// <summary>
+    /// Draws a boxed value at an absolute screen position using the draw list directly.
+    /// Returns the total width of the rendered box (for layout calculations).
+    /// </summary>
+    private static float DrawBoxedValueAt(ImDrawListPtr drawList, Vector2 pos, string text, Vector4 color)
+    {
+        var textSize = ImGui.CalcTextSize(text);
+        var padding = new Vector2(5, 2);
+        var boxMin = pos;
+        var boxMax = new Vector2(pos.X + textSize.X + padding.X * 2, pos.Y + textSize.Y + padding.Y * 2);
+        var bgColor = new Vector4(color.X, color.Y, color.Z, 0.12f);
+        var borderColor = new Vector4(color.X, color.Y, color.Z, 0.55f);
+
+        drawList.AddRectFilled(boxMin, boxMax, ImGui.ColorConvertFloat4ToU32(bgColor), 3f);
+        drawList.AddRect(boxMin, boxMax, ImGui.ColorConvertFloat4ToU32(borderColor), 3f);
+        drawList.AddText(new Vector2(pos.X + padding.X, pos.Y + padding.Y),
+            ImGui.ColorConvertFloat4ToU32(color), text);
+        return textSize.X + padding.X * 2;
     }
 
     // ──────────────────────────────────────────────

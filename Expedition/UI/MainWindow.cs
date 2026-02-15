@@ -28,8 +28,12 @@ public sealed class MainWindow
     private RecipeNode? selectedRecipe;
     private ResolvedRecipe? previewResolution;
     private int craftQuantity = 1;
-    private bool showSettings;
+    private bool resetTabToSettings;
     private string logFilter = string.Empty;
+
+    // Gathering tab state
+    private string gatherSearchQuery = string.Empty;
+    private List<GatherableItemInfo> gatherSearchResults = new();
 
     // Activation prompt state
     private string activationKeyInput = string.Empty;
@@ -79,7 +83,7 @@ public sealed class MainWindow
     public void OpenSettings()
     {
         IsOpen = true;
-        showSettings = true;
+        resetTabToSettings = true;
     }
 
     public void Draw()
@@ -109,13 +113,6 @@ public sealed class MainWindow
         DrawMenuBar();
         DrawHeaderBar();
 
-        if (showSettings)
-        {
-            SettingsTab.Draw(Expedition.Config);
-            ImGui.End();
-            return;
-        }
-
         ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(6, 4));
         if (ImGui.BeginTabBar("ExpeditionTabs"))
         {
@@ -130,6 +127,12 @@ public sealed class MainWindow
             if (ImGui.BeginTabItem("Recipe"))
             {
                 DrawRecipeTab();
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Gathering"))
+            {
+                DrawGatheringTab();
                 ImGui.EndTabItem();
             }
 
@@ -151,7 +154,9 @@ public sealed class MainWindow
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Settings"))
+            var settingsFlags = resetTabToSettings ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+            if (resetTabToSettings) resetTabToSettings = false;
+            if (ImGui.BeginTabItem("Settings", settingsFlags))
             {
                 SettingsTab.Draw(Expedition.Config);
                 ImGui.EndTabItem();
@@ -952,6 +957,7 @@ public sealed class MainWindow
             ImGui.SameLine(0, Theme.PadLarge);
             Theme.KeyValue("Item Level:", item.ItemLevel.ToString(), Theme.Accent);
         }
+
     }
 
     // ──────────────────────────────────────────────
@@ -1057,6 +1063,126 @@ public sealed class MainWindow
         // Bottom action bar
         ImGui.Spacing();
         DrawRecipeActionBar();
+    }
+
+    // ──────────────────────────────────────────────
+    // Gathering Tab
+    // ──────────────────────────────────────────────
+
+    private void DrawGatheringTab()
+    {
+        // Search bar
+        ImGui.Spacing();
+        ImGui.SetNextItemWidth(-120);
+        if (ImGui.InputTextWithHint("##GatherSearch", "Search gathering items...", ref gatherSearchQuery, 256, ImGuiInputTextFlags.EnterReturnsTrue))
+            DoGatherSearch();
+
+        ImGui.SameLine();
+        if (Theme.PrimaryButton("Search", new Vector2(105, 0)))
+            DoGatherSearch();
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // Two-column layout
+        var avail = ImGui.GetContentRegionAvail();
+        var bottomBarHeight = 48f;
+        var contentHeight = avail.Y - bottomBarHeight;
+
+        // Left panel: Search results
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
+        ImGui.BeginChild("GatherSearchResults", new Vector2(avail.X * 0.38f, contentHeight), true);
+        ImGui.PopStyleColor();
+        {
+            if (gatherSearchResults.Count == 0)
+            {
+                ImGui.Spacing();
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Theme.Pad);
+                ImGui.TextColored(Theme.TextMuted, gatherSearchQuery.Length > 0
+                    ? "No results found."
+                    : "Type an item name to search.");
+            }
+            else
+            {
+                ImGui.TextColored(Theme.TextSecondary, $"  {gatherSearchResults.Count} results");
+                ImGui.Separator();
+
+                var iconSm = new Vector2(36, 36);
+                var jobIconSm = new Vector2(24, 24);
+
+                foreach (var item in gatherSearchResults)
+                {
+                    var isSelected = selectedGatherItem?.ItemId == item.ItemId;
+
+                    DrawGameIcon(item.IconId, iconSm);
+                    ImGui.SameLine(0, Theme.PadSmall);
+
+                    var cursorY = ImGui.GetCursorPosY();
+                    ImGui.SetCursorPosY(cursorY + (iconSm.Y - ImGui.GetTextLineHeight()) / 2);
+
+                    var label = $"{item.ItemName}##gatherTab{item.ItemId}";
+                    if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 60, 0)))
+                    {
+                        selectedGatherItem = item;
+                        selectedRecipe = null;
+                        previewResolution = null;
+                    }
+
+                    // Gather class icon + level on right
+                    ImGui.SameLine(ImGui.GetContentRegionAvail().X - 50);
+                    var gatherClassJobId = item.GatherClass switch
+                    {
+                        GatherType.Miner => 16u,
+                        GatherType.Botanist => 17u,
+                        GatherType.Fisher => 18u,
+                        _ => 0u,
+                    };
+                    if (gatherClassJobId > 0)
+                        DrawGameIcon(62100 + gatherClassJobId, jobIconSm);
+                    ImGui.SameLine(0, 2);
+                    ImGui.TextColored(Theme.TextMuted, $"{item.GatherLevel}");
+
+                    if (ImGui.IsItemHovered() && (item.IsCollectable || item.IsAlsoCraftable))
+                    {
+                        ImGui.BeginTooltip();
+                        if (item.IsCollectable) ImGui.TextColored(Theme.Collectable, "Collectable");
+                        if (item.IsAlsoCraftable) ImGui.TextColored(Theme.Gold, "Also Craftable");
+                        ImGui.EndTooltip();
+                    }
+                }
+            }
+        }
+        ImGui.EndChild();
+
+        ImGui.SameLine();
+
+        // Right panel: Gather item details
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SectionBg);
+        ImGui.BeginChild("GatherDetails", new Vector2(0, contentHeight), true);
+        ImGui.PopStyleColor();
+        {
+            if (selectedGatherItem != null)
+                DrawGatherItemDetails();
+            else
+            {
+                var center = ImGui.GetContentRegionAvail();
+                ImGui.SetCursorPos(new Vector2(Theme.PadLarge, center.Y / 2 - 20));
+                ImGui.TextColored(Theme.TextMuted, "Select a gathering item from the search results");
+                ImGui.SetCursorPosX(Theme.PadLarge);
+                ImGui.TextColored(Theme.TextMuted, "to view details and start gathering.");
+            }
+        }
+        ImGui.EndChild();
+
+        // Bottom action bar
+        ImGui.Spacing();
+        DrawRecipeActionBar();
+    }
+
+    private void DoGatherSearch()
+    {
+        gatherSearchResults = plugin.RecipeResolver.SearchGatherItems(gatherSearchQuery);
     }
 
     private void DrawRecipeDetails()
