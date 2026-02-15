@@ -1,8 +1,6 @@
 using Dalamud.Game.Command;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
-using Dalamud.Bindings.ImGui;
-
 using Expedition.Activation;
 using Expedition.Crafting;
 using Expedition.Gathering;

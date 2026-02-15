@@ -46,7 +46,7 @@ public sealed class JobSwitchManager
     /// </summary>
     public static uint GetCurrentJobId()
     {
-        var player = DalamudApi.ObjectTable.LocalPlayer;
+        var player = DalamudApi.ClientState.LocalPlayer;
         if (player == null) return 0;
         return player.ClassJob.RowId;
     }

@@ -28,7 +28,7 @@ public sealed class GpTracker
     /// </summary>
     public uint GetCurrentGp()
     {
-        var player = DalamudApi.ObjectTable.LocalPlayer;
+        var player = DalamudApi.ClientState.LocalPlayer;
         if (player == null) return 0;
         return player.CurrentGp;
     }
@@ -38,7 +38,7 @@ public sealed class GpTracker
     /// </summary>
     public uint GetMaxGp()
     {
-        var player = DalamudApi.ObjectTable.LocalPlayer;
+        var player = DalamudApi.ClientState.LocalPlayer;
         if (player == null) return 0;
         return player.MaxGp;
     }

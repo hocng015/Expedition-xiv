@@ -20,7 +20,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '9.0.x'
 
       - name: Extract version from tag
         id: version
@@ -92,9 +92,13 @@ jobs:
           $ver = "${{ steps.version.outputs.version }}"
           $repo = Get-Content repo.json -Raw | ConvertFrom-Json
 
+          $downloadUrl = "https://github.com/hocng015/Expedition-xiv/releases/download/v$ver/latest.zip"
           foreach ($plugin in $repo) {
             if ($plugin.InternalName -eq "Expedition") {
               $plugin.AssemblyVersion = $ver
+              $plugin.DownloadLinkInstall = $downloadUrl
+              $plugin.DownloadLinkUpdate = $downloadUrl
+              $plugin.DownloadLinkTesting = $downloadUrl
             }
           }
 

@@ -74,7 +74,7 @@ public sealed class BuffTracker
 
     private bool HasStatus(uint statusId)
     {
-        var player = DalamudApi.ObjectTable.LocalPlayer;
+        var player = DalamudApi.ClientState.LocalPlayer;
         if (player == null) return false;
 
         foreach (var status in player.StatusList)
@@ -87,7 +87,7 @@ public sealed class BuffTracker
 
     private float GetStatusRemainingTime(uint statusId)
     {
-        var player = DalamudApi.ObjectTable.LocalPlayer;
+        var player = DalamudApi.ClientState.LocalPlayer;
         if (player == null) return 0;
 
         foreach (var status in player.StatusList)

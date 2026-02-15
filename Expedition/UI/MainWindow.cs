@@ -1,6 +1,6 @@
 using System.Numerics;
 using System.Reflection;
-using Dalamud.Bindings.ImGui;
+using ImGuiNET;
 using Dalamud.Interface.Textures;
 
 using Expedition.Activation;
@@ -344,7 +344,7 @@ public sealed class MainWindow
         }
 
         // ── Right: Food buff status ──
-        var player = DalamudApi.ObjectTable.LocalPlayer;
+        var player = DalamudApi.ClientState.LocalPlayer;
         if (player != null)
         {
             var buffTracker = plugin.WorkflowEngine.BuffTracker;
