@@ -176,6 +176,15 @@ public sealed class GatheringOrchestrator
             return;
         }
 
+        // Log full queue details for debugging class-switch issues
+        for (var i = 0; i < taskQueue.Count; i++)
+        {
+            var t = taskQueue[i];
+            DalamudApi.Log.Information(
+                $"Gather queue [{i}]: {t.ItemName} (id={t.ItemId}) x{t.QuantityNeeded} — " +
+                $"type={t.GatherType}, timed={t.IsTimedNode}, collectable={t.IsCollectable}");
+        }
+
         // Inject all gather items into GBR's auto-gather list via reflection
         InjectGatherList();
 
@@ -213,6 +222,9 @@ public sealed class GatheringOrchestrator
         // Throttle polling to once per second
         if ((DateTime.Now - lastPollTime).TotalMilliseconds < 1000) return;
         lastPollTime = DateTime.Now;
+
+        // Poll dependency readiness (time-throttled internally by DependencyMonitor)
+        ipc.DependencyMonitor.Poll();
 
         // Inter-task delay (replaces Task.Run + Task.Delay)
         if (interTaskDelayUntil.HasValue)
@@ -335,6 +347,35 @@ public sealed class GatheringOrchestrator
                 return;
             }
 
+            // --- Dependency-aware re-enable ---
+            // Before blindly re-enabling, check if dependencies are actually ready.
+            // This prevents wasted retries when vnavmesh is rebuilding or GBR is unavailable.
+            var depSnapshot = ipc.DependencyMonitor.GetSnapshot();
+
+            if (!depSnapshot.GbrAvailable)
+            {
+                // GBR IPC itself is gone — force a fresh availability check
+                ipc.GatherBuddy.CheckAvailability();
+                StatusMessage = $"Waiting for GatherBuddy Reborn... [{task.ItemName}]";
+                // Don't count this as a re-enable failure — it's a dependency issue
+                consecutiveReEnableFailures = Math.Max(0, consecutiveReEnableFailures - 1);
+                lastProgressTime = DateTime.Now; // Don't stall-timeout while waiting for deps
+                return;
+            }
+
+            if (depSnapshot.VnavmeshAvailable && !depSnapshot.NavReady)
+            {
+                // vnavmesh is building — don't re-enable, just wait
+                var blockReason = depSnapshot.GetBlockReason() ?? "vnavmesh not ready";
+                StatusMessage = $"Waiting: {blockReason} [{task.ItemName}]";
+                DalamudApi.Log.Debug($"Deferring GBR re-enable: {blockReason}");
+                // Don't count navmesh rebuilds as re-enable failures
+                consecutiveReEnableFailures = Math.Max(0, consecutiveReEnableFailures - 1);
+                lastProgressTime = DateTime.Now; // Don't stall-timeout while nav is building
+                return;
+            }
+
+            // Dependencies are ready — proceed with re-enable logic
             var sinceLastReEnable = (DateTime.Now - lastAutoGatherCheck).TotalSeconds;
 
             if (sinceLastReEnable >= AutoGatherReEnableIntervalSeconds)
@@ -406,11 +447,19 @@ public sealed class GatheringOrchestrator
             return;
         }
 
-        // Update status message with GBR state info
+        // Update status message with GBR state and dependency info
         var elapsed = (DateTime.Now - taskStartTime).TotalSeconds;
         var cmdTag = commandOnlyMode ? " [cmd]" : "";
-        var gbrStatus = !gbrEnabled ? $" [GBR: OFF — re-enabling]{cmdTag}" :
-                        gbrWaiting  ? $" [GBR: Waiting]{cmdTag}" : cmdTag;
+        var depTag = "";
+        {
+            var depSnap = ipc.DependencyMonitor.GetSnapshot();
+            if (depSnap.VnavmeshAvailable && !depSnap.NavReady)
+                depTag = $" [Nav: building {depSnap.NavBuildProgress:P0}]";
+            else if (!depSnap.GbrAvailable)
+                depTag = " [GBR: unavailable]";
+        }
+        var gbrStatus = !gbrEnabled ? $" [GBR: OFF — re-enabling]{cmdTag}{depTag}" :
+                        gbrWaiting  ? $" [GBR: Waiting]{cmdTag}{depTag}" : $"{cmdTag}{depTag}";
 
         if (task.IsTimedNode && task.SpawnHours != null)
         {
@@ -579,6 +628,9 @@ public sealed class GatheringOrchestrator
 
         // Send the gather command to hint GBR and trigger teleport.
         // In command-only mode, use the generic /gather to let GBR pick the best class.
+        DalamudApi.Log.Information(
+            $"Starting gather task: {task.ItemName} — GatherType={task.GatherType}, " +
+            $"commandOnly={commandOnlyMode}, need={task.QuantityRemaining} more");
         if (commandOnlyMode)
             ChatIpc.GatherItem(task.ItemName);
         else
@@ -621,6 +673,16 @@ public sealed class GatheringOrchestrator
             DalamudApi.Log.Information(StatusMessage);
             return;
         }
+
+        // Log the class transition for debugging class-switch issues
+        var nextTask = taskQueue[currentTaskIndex];
+        var prevType = prevTask?.GatherType.ToString() ?? "?";
+        var nextType = nextTask.GatherType.ToString();
+        var classSwitch = prevTask != null && prevTask.GatherType != nextTask.GatherType;
+        DalamudApi.Log.Information(
+            $"Advancing to task [{currentTaskIndex}]: {nextTask.ItemName} ({nextType}) " +
+            $"from {prevTask?.ItemName ?? "none"} ({prevType})" +
+            (classSwitch ? " — CLASS SWITCH REQUIRED" : ""));
 
         // Small delay before starting next task (let GBR settle).
         // Uses a timestamp check in Update() instead of Task.Run to avoid async state machine allocation.

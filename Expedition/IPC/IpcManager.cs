@@ -8,12 +8,16 @@ public sealed class IpcManager : IDisposable
     public GatherBuddyIpc GatherBuddy { get; }
     public GatherBuddyListManager GatherBuddyLists { get; }
     public ArtisanIpc Artisan { get; }
+    public VnavmeshIpc Vnavmesh { get; }
+    public DependencyMonitor DependencyMonitor { get; }
 
     public IpcManager()
     {
         GatherBuddy = new GatherBuddyIpc();
         GatherBuddyLists = new GatherBuddyListManager();
         Artisan = new ArtisanIpc();
+        Vnavmesh = new VnavmeshIpc();
+        DependencyMonitor = new DependencyMonitor(GatherBuddy, Vnavmesh);
     }
 
     /// <summary>
@@ -23,19 +27,21 @@ public sealed class IpcManager : IDisposable
     {
         GatherBuddy.CheckAvailability();
         Artisan.CheckAvailability();
+        Vnavmesh.CheckAvailability();
     }
 
     /// <summary>
     /// Returns a status summary of plugin availability.
     /// </summary>
-    public (bool gatherBuddy, bool artisan) GetAvailability()
+    public (bool gatherBuddy, bool artisan, bool vnavmesh) GetAvailability()
     {
-        return (GatherBuddy.IsAvailable, Artisan.IsAvailable);
+        return (GatherBuddy.IsAvailable, Artisan.IsAvailable, Vnavmesh.IsAvailable);
     }
 
     public void Dispose()
     {
         GatherBuddy.Dispose();
         Artisan.Dispose();
+        Vnavmesh.Dispose();
     }
 }

@@ -14,7 +14,7 @@ public static class ChatIpc
     /// </summary>
     public static void SendCommand(string command)
     {
-        DalamudApi.Log.Debug($"Sending command: {command}");
+        DalamudApi.Log.Information($"Sending chat command: {command}");
         DalamudApi.CommandManager.ProcessCommand(command);
     }
 

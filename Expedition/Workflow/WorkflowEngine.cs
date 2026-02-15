@@ -71,6 +71,9 @@ public sealed class WorkflowEngine : IDisposable
     private bool gatherPrepCompleted;
     private bool craftPrepCompleted;
 
+    // Dependency wait state
+    private DateTime? dependencyWaitStart;
+
     // Pre-craft teleport state
     private bool teleportCommandSent;
     private DateTime teleportSentTime;
@@ -588,6 +591,37 @@ public sealed class WorkflowEngine : IDisposable
             return; // Will retry next frame
         }
 
+        // --- Dependency readiness gate ---
+        // Poll dependencies and wait with timeout instead of single check-and-fail.
+        var depMonitor = Expedition.Instance.Ipc.DependencyMonitor;
+        depMonitor.Poll();
+        var snapshot = depMonitor.GetSnapshot();
+
+        if (!snapshot.IsFullyReady && config.MonitorDependencies)
+        {
+            // Start tracking wait time on first encounter
+            dependencyWaitStart ??= DateTime.Now;
+
+            var elapsed = (DateTime.Now - dependencyWaitStart.Value).TotalSeconds;
+            var timeout = config.DependencyWaitTimeoutSeconds;
+            var blockReason = snapshot.GetBlockReason() ?? "Dependencies not ready";
+
+            if (elapsed > timeout)
+            {
+                // Timeout exceeded — fail with specific reason
+                dependencyWaitStart = null;
+                HandleError($"Dependency wait timed out after {timeout}s: {blockReason}");
+                return;
+            }
+
+            // Still waiting — show progress and retry next frame
+            SetStatus($"Waiting: {blockReason} ({elapsed:F0}s / {timeout}s)");
+            return;
+        }
+
+        // Dependencies are ready (or monitoring disabled) — clear wait state
+        dependencyWaitStart = null;
+
         SetStatus("Preparing gathering queue...");
 
         try
@@ -901,6 +935,20 @@ public sealed class WorkflowEngine : IDisposable
         if ((DateTime.Now - lastHealthCheck).TotalSeconds < HealthCheckIntervalSeconds) return;
         lastHealthCheck = DateTime.Now;
 
+        // Dependency health
+        if (config.MonitorDependencies)
+        {
+            var depMonitor = Expedition.Instance.Ipc.DependencyMonitor;
+            depMonitor.Poll();
+            var depSnapshot = depMonitor.GetSnapshot();
+            var failure = depMonitor.DiagnoseFailure();
+            if (failure != IPC.DependencyMonitor.FailureCategory.None)
+            {
+                var reason = depSnapshot.GetBlockReason() ?? failure.ToString();
+                AddLog($"  [Health] Dependency issue: {reason}");
+            }
+        }
+
         // Durability check
         if (config.MonitorDurabilityDuringRun)
         {
@@ -978,6 +1026,7 @@ public sealed class WorkflowEngine : IDisposable
         craftPrepCompleted = false;
         teleportCommandSent = false;
         teleportArrived = false;
+        dependencyWaitStart = null;
     }
 
     public void Dispose()

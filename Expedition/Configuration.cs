@@ -52,6 +52,11 @@ public sealed class Configuration : IPluginConfiguration
     public bool BlockOnCriticalWarnings { get; set; } = true;
     public bool BlockOnExpertRecipes { get; set; } = false;
 
+    // --- Dependency Monitoring ---
+    public bool MonitorDependencies { get; set; } = true;
+    public int DependencyPollIntervalSeconds { get; set; } = 5;
+    public int DependencyWaitTimeoutSeconds { get; set; } = 120;
+
     // --- Workflow ---
     public int PollingIntervalMs { get; set; } = 1000;
     public int IpcTimeoutMs { get; set; } = 300000;

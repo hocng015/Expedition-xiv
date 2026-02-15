@@ -33,6 +33,7 @@ public static class SettingsTab
 
         DrawGeneralSection(config);
         DrawGatheringSection(config);
+        DrawDependencySection(config);
         DrawGpSection(config);
         DrawCraftingSection(config);
         DrawBuffSection(config);
@@ -147,6 +148,77 @@ public static class SettingsTab
             config.Save();
         }
         Theme.HelpMarker("Gather this many extra of each material as a safety margin.");
+
+        EndSection();
+    }
+
+    private static void DrawDependencySection(Configuration config)
+    {
+        if (!ImGui.CollapsingHeader("Dependency Monitoring")) return;
+
+        BeginSection();
+        ImGui.TextColored(Theme.TextMuted, "Monitor GatherBuddy Reborn and vnavmesh readiness before gathering.");
+        ImGui.Spacing();
+
+        var monitor = config.MonitorDependencies;
+        if (ImGui.Checkbox("Enable dependency monitoring", ref monitor))
+        {
+            config.MonitorDependencies = monitor;
+            config.Save();
+        }
+        Theme.HelpMarker("When enabled, Expedition checks that GBR and vnavmesh are ready before " +
+                          "starting or re-enabling gathering. Prevents blind retries during navmesh rebuilds.");
+
+        if (config.MonitorDependencies)
+        {
+            ImGui.Indent(20);
+
+            var pollInterval = config.DependencyPollIntervalSeconds;
+            ImGui.SetNextItemWidth(150);
+            if (ImGui.InputInt("Poll interval (sec)", ref pollInterval))
+            {
+                config.DependencyPollIntervalSeconds = Math.Clamp(pollInterval, 1, 60);
+                config.Save();
+            }
+            Theme.HelpMarker("How often to poll GBR/vnavmesh IPC for readiness updates. Lower = more responsive.");
+
+            var waitTimeout = config.DependencyWaitTimeoutSeconds;
+            ImGui.SetNextItemWidth(150);
+            if (ImGui.InputInt("Wait timeout (sec)", ref waitTimeout))
+            {
+                config.DependencyWaitTimeoutSeconds = Math.Clamp(waitTimeout, 10, 600);
+                config.Save();
+            }
+            Theme.HelpMarker("Max time to wait for dependencies before failing the workflow. " +
+                              "Covers navmesh rebuilds after zone changes.");
+
+            // Live status display
+            ImGui.Spacing();
+            ImGui.Separator();
+            ImGui.Spacing();
+            ImGui.TextColored(Theme.TextSecondary, "Live Status");
+            ImGui.Spacing();
+
+            var snapshot = Expedition.Instance.Ipc.DependencyMonitor.GetSnapshot();
+
+            var gbrColor = snapshot.GbrAvailable ? Theme.Success : Theme.Error;
+            var gbrText = snapshot.GbrAvailable ? "Available" : "Unavailable";
+            ImGui.TextColored(gbrColor, $"  GBR: {gbrText}");
+
+            if (snapshot.VnavmeshAvailable)
+            {
+                var navColor = snapshot.NavReady ? Theme.Success : Theme.Warning;
+                var navText = snapshot.NavReady ? "Ready" :
+                    $"Building ({snapshot.NavBuildProgress:P0})";
+                ImGui.TextColored(navColor, $"  vnavmesh: {navText}");
+            }
+            else
+            {
+                ImGui.TextColored(Theme.TextMuted, "  vnavmesh: Not detected (using safe defaults)");
+            }
+
+            ImGui.Unindent(20);
+        }
 
         EndSection();
     }

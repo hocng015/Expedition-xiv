@@ -290,7 +290,7 @@ public sealed class MainWindow
     {
         if (!ImGui.BeginMenuBar()) return;
 
-        var (gbr, artisan) = plugin.Ipc.GetAvailability();
+        var (gbr, artisan, vnav) = plugin.Ipc.GetAvailability();
 
         // GBR status
         Theme.StatusDot(gbr ? Theme.Success : Theme.Error, "GBR");
@@ -298,6 +298,18 @@ public sealed class MainWindow
 
         // Artisan status
         Theme.StatusDot(artisan ? Theme.Success : Theme.Error, "Artisan");
+        ImGui.SameLine(0, Theme.PadLarge);
+
+        // vnavmesh status: green = ready, amber = building, gray = not detected
+        if (vnav)
+        {
+            var navReady = plugin.Ipc.DependencyMonitor.GetSnapshot().NavReady;
+            Theme.StatusDot(navReady ? Theme.Success : Theme.Warning, "vnav");
+        }
+        else
+        {
+            Theme.StatusDot(Theme.TextMuted, "vnav");
+        }
 
         if (!gbr || !artisan)
         {
