@@ -149,6 +149,28 @@ public static class SettingsTab
         }
         Theme.HelpMarker("Gather this many extra of each material as a safety margin.");
 
+        ImGui.Spacing();
+        ImGui.TextColored(Theme.TextMuted, "Completion detection timeouts:");
+        ImGui.Spacing();
+
+        var noDeltaTimeout = config.GatherNoDeltaTimeoutSeconds;
+        ImGui.SetNextItemWidth(150);
+        if (ImGui.InputInt("No-progress timeout (sec)", ref noDeltaTimeout))
+        {
+            config.GatherNoDeltaTimeoutSeconds = Math.Clamp(noDeltaTimeout, 10, 120);
+            config.Save();
+        }
+        Theme.HelpMarker("If inventory count hasn't changed for this long while GBR is idle, trigger a confirmation rescan. Lower values detect completion faster but may cause false positives.");
+
+        var absoluteTimeout = config.GatherAbsoluteTimeoutSeconds;
+        ImGui.SetNextItemWidth(150);
+        if (ImGui.InputInt("Absolute gather timeout (sec)", ref absoluteTimeout))
+        {
+            config.GatherAbsoluteTimeoutSeconds = Math.Clamp(absoluteTimeout, 30, 300);
+            config.Save();
+        }
+        Theme.HelpMarker("Hard timeout: if no inventory change at all for this long, force a retry. This catches cases where gathering silently stopped.");
+
         EndSection();
     }
 

@@ -30,6 +30,29 @@ public sealed class GatheringOrchestrator
     private int lastKnownCount = -1;
     private bool listInjected;
 
+    // --- Count-Delta Detection ---
+
+    /// <summary>Inventory count at the start of the current task (snapshot baseline).</summary>
+    private int baselineCount;
+
+    /// <summary>Cached slot tracker for the current task's item.</summary>
+    private readonly Inventory.InventoryManager.ItemSlotCache slotCache = new();
+
+    /// <summary>When the count-delta last changed (inventory increased).</summary>
+    private DateTime lastDeltaChangeTime = DateTime.MinValue;
+
+    /// <summary>
+    /// When we first detected no delta change while GBR is idle.
+    /// Used for the soft "no-delta" timeout (30s default).
+    /// </summary>
+    private DateTime? noDeltaTimeoutStart;
+
+    /// <summary>
+    /// Timestamp of the last inventory event we consumed from InventoryManager.
+    /// Used to detect if an event arrived between polls.
+    /// </summary>
+    private DateTime lastConsumedEventTime = DateTime.MinValue;
+
     /// <summary>
     /// True when the current task's item couldn't be added to GBR's auto-gather list
     /// (e.g., crystals not in GBR's Gatherables dictionary). In this mode we rely on
@@ -84,6 +107,20 @@ public sealed class GatheringOrchestrator
     /// (disable AutoGather, wait, then re-inject list and restart).
     /// </summary>
     private const int MaxReEnableFailuresBeforeReset = 3;
+
+    /// <summary>
+    /// Tracks how many full reset cycles we've done for the current task
+    /// without any inventory progress. After too many, the task is stuck and we should advance.
+    /// </summary>
+    private int resetCyclesWithoutProgress;
+
+    /// <summary>
+    /// Polls since last periodic summary log. Used to emit a state dump every ~30 polls (30s).
+    /// </summary>
+    private int pollsSinceLastSummary;
+
+    /// <summary>How often (in poll cycles) to emit a periodic state summary to the log.</summary>
+    private const int SummaryLogInterval = 30;
 
     /// <summary>
     /// When non-null, we're in a delay between tasks. Update() skips gathering logic until this time.
@@ -176,12 +213,24 @@ public sealed class GatheringOrchestrator
             return;
         }
 
+        // Seed QuantityGathered from live inventory for accurate remaining counts.
+        // This ensures the GBR inject list gets correct quantities, and
+        // StartCurrentTask can skip tasks that are already complete.
+        var includeSaddlebag = Expedition.Config.IncludeSaddlebagInScans;
+        var inventoryManager = Expedition.Instance.InventoryManager;
+        for (var i = 0; i < taskQueue.Count; i++)
+        {
+            var t = taskQueue[i];
+            t.QuantityGathered = inventoryManager.GetItemCount(t.ItemId, includeSaddlebag: includeSaddlebag);
+        }
+
         // Log full queue details for debugging class-switch issues
         for (var i = 0; i < taskQueue.Count; i++)
         {
             var t = taskQueue[i];
             DalamudApi.Log.Information(
-                $"Gather queue [{i}]: {t.ItemName} (id={t.ItemId}) x{t.QuantityNeeded} — " +
+                $"Gather queue [{i}]: {t.ItemName} (id={t.ItemId}) — " +
+                $"have={t.QuantityGathered}, need={t.QuantityNeeded}, remaining={t.QuantityRemaining}, " +
                 $"type={t.GatherType}, timed={t.IsTimedNode}, collectable={t.IsCollectable}");
         }
 
@@ -198,12 +247,19 @@ public sealed class GatheringOrchestrator
     /// </summary>
     public void Stop()
     {
+        var task = CurrentTask;
         if (State == GatheringOrchestratorState.Running)
         {
+            DalamudApi.Log.Information(
+                $"[Gather:Stop] Stopping gathering. Current task: {task?.ItemName ?? "none"}, " +
+                $"count={task?.QuantityGathered ?? 0}/{task?.QuantityNeeded ?? 0}, " +
+                $"taskIndex={currentTaskIndex}/{taskQueue.Count}, " +
+                $"reEnableFails={consecutiveReEnableFailures}, resetCycles={resetCyclesWithoutProgress}");
             ipc.GatherBuddy.SetAutoGatherEnabled(false);
         }
 
         CleanupGatherList();
+        slotCache.Clear();
 
         interTaskDelayUntil = null;
         State = GatheringOrchestratorState.Idle;
@@ -242,26 +298,77 @@ public sealed class GatheringOrchestrator
             return;
         }
 
-        // Check inventory to see if we've gathered enough (include saddlebag to match StartGather's count)
-        var currentCount = inventoryManager.GetItemCount(task.ItemId, includeSaddlebag: Expedition.Config.IncludeSaddlebagInScans);
-        task.QuantityGathered = currentCount;
+        // --- Count-Delta Detection ---
+        // Use cached slot positions for fast reads. Fall back to full scan if cache returns -1.
+        var includeSaddlebag = Expedition.Config.IncludeSaddlebagInScans;
+        var cachedCount = slotCache.GetCachedCount(includeSaddlebag);
+        var usedCache = cachedCount >= 0;
+        var currentCount = usedCache
+            ? cachedCount
+            : inventoryManager.GetItemCount(task.ItemId, includeSaddlebag: includeSaddlebag);
 
-        // Track progress — reset the stall timer whenever inventory increases
-        if (lastKnownCount < 0)
+        // Check if an inventory event arrived between polls (early signal).
+        // If so, do a full rescan to get the authoritative count.
+        var eventTriggered = false;
+        if (inventoryManager.LastInventoryEventTime > lastConsumedEventTime)
         {
-            // First poll after task start: seed with actual count (don't treat as progress)
-            lastKnownCount = currentCount;
+            lastConsumedEventTime = inventoryManager.LastInventoryEventTime;
+            var eventCount = inventoryManager.GetItemCount(task.ItemId, includeSaddlebag: includeSaddlebag);
+            if (eventCount != currentCount)
+            {
+                DalamudApi.Log.Debug($"[Gather:Event] Recount for {task.ItemName}: {currentCount} -> {eventCount} (cache={usedCache})");
+                currentCount = eventCount;
+                eventTriggered = true;
+                // Reinitialize cache with fresh slot positions
+                slotCache.Initialize(task.ItemId, includeSaddlebag);
+            }
         }
-        else if (currentCount > lastKnownCount)
+
+        task.QuantityGathered = currentCount;
+        pollsSinceLastSummary++;
+
+        // Track progress — reset timers whenever inventory increases
+        if (currentCount > lastKnownCount)
         {
-            DalamudApi.Log.Debug($"Gathering progress: {task.ItemName} {lastKnownCount} -> {currentCount}");
+            var delta = currentCount - baselineCount;
+            DalamudApi.Log.Information(
+                $"[Gather:Progress] {task.ItemName}: {lastKnownCount} -> {currentCount} " +
+                $"(+{currentCount - lastKnownCount} this poll, total delta +{delta} from baseline {baselineCount}, " +
+                $"target={task.QuantityNeeded}, remaining={task.QuantityNeeded - currentCount}, " +
+                $"source={CountSource(usedCache, eventTriggered)})");
             lastKnownCount = currentCount;
             lastProgressTime = DateTime.Now;
+            lastDeltaChangeTime = DateTime.Now;
             gbrIdlePolls = 0;
+            noDeltaTimeoutStart = null; // Reset soft timeout
+            resetCyclesWithoutProgress = 0; // Real progress — reset cycle counter
         }
 
+        // --- Periodic summary log (every ~30s) for at-a-glance state ---
+        if (pollsSinceLastSummary >= SummaryLogInterval)
+        {
+            pollsSinceLastSummary = 0;
+            var gbrEnabledSummary = ipc.GatherBuddy.GetAutoGatherEnabled();
+            var gbrWaitingSummary = ipc.GatherBuddy.GetAutoGatherWaiting();
+            var secSinceDelta = (DateTime.Now - lastDeltaChangeTime).TotalSeconds;
+            var secSinceProgress = (DateTime.Now - lastProgressTime).TotalSeconds;
+            var elapsedTotal = (DateTime.Now - taskStartTime).TotalSeconds;
+            DalamudApi.Log.Information(
+                $"[Gather:Summary] {task.ItemName}: {currentCount}/{task.QuantityNeeded} " +
+                $"(baseline={baselineCount}, delta=+{currentCount - baselineCount}) | " +
+                $"GBR: enabled={gbrEnabledSummary}, waiting={gbrWaitingSummary} | " +
+                $"cmdOnly={commandOnlyMode}, reEnableFails={consecutiveReEnableFailures}, " +
+                $"resetCycles={resetCyclesWithoutProgress}, idlePolls={gbrIdlePolls} | " +
+                $"sinceLastDelta={secSinceDelta:F0}s, sinceProgress={secSinceProgress:F0}s, " +
+                $"elapsed={elapsedTotal:F0}s, retries={task.RetryCount}/{Expedition.Config.GatherRetryLimit}");
+        }
+
+        // --- PRIMARY: Target quantity met ---
         if (task.IsComplete)
         {
+            var elapsedSec = (DateTime.Now - taskStartTime).TotalSeconds;
+            var totalDelta = currentCount - baselineCount;
+
             // Target quantity met — but wait for the player to finish the current node.
             // Walking away from a half-mined node is wasteful; let GBR exhaust it.
             var isAtNode = DalamudApi.Condition[ConditionFlag.Gathering]
@@ -272,7 +379,9 @@ public sealed class GatheringOrchestrator
                 if (!finishingNodeSince.HasValue)
                 {
                     finishingNodeSince = DateTime.Now;
-                    DalamudApi.Log.Information($"Target met for {task.ItemName} — finishing current node before advancing.");
+                    DalamudApi.Log.Information(
+                        $"[Gather:Complete] Target met for {task.ItemName} ({currentCount}/{task.QuantityNeeded}, " +
+                        $"delta=+{totalDelta} in {elapsedSec:F0}s) — finishing current node.");
                 }
 
                 // Safety timeout so we don't wait forever
@@ -283,15 +392,116 @@ public sealed class GatheringOrchestrator
                     return; // Keep waiting, let GBR finish the node
                 }
 
-                DalamudApi.Log.Information($"Node finish timeout for {task.ItemName}, advancing.");
+                DalamudApi.Log.Information($"[Gather:Complete] Node finish timeout ({FinishNodeTimeoutSeconds}s) for {task.ItemName}, advancing.");
             }
 
             // Node is done (or we weren't at one, or timeout) — advance
             finishingNodeSince = null;
             task.Status = GatheringTaskStatus.Completed;
             StatusMessage = $"Gathered enough {task.ItemName}.";
-            DalamudApi.Log.Information(StatusMessage);
+            DalamudApi.Log.Information(
+                $"[Gather:Complete] {task.ItemName} DONE: {currentCount}/{task.QuantityNeeded} " +
+                $"(delta=+{totalDelta}, baseline={baselineCount}, elapsed={elapsedSec:F0}s, " +
+                $"retries={task.RetryCount}, source={CountSource(usedCache, eventTriggered)})");
             AdvanceToNextTask();
+            return;
+        }
+
+        // --- SECONDARY: No-delta timeout (soft) ---
+        // If GBR is idle/off and no inventory change for GatherNoDeltaTimeoutSeconds,
+        // do a full rescan to confirm, then trigger retry.
+        var gbrEnabledForDelta = ipc.GatherBuddy.GetAutoGatherEnabled();
+        var gbrWaitingForDelta = ipc.GatherBuddy.GetAutoGatherWaiting();
+        var gbrIdle = !gbrEnabledForDelta || gbrWaitingForDelta;
+        var noDeltaTimeout = Expedition.Config.GatherNoDeltaTimeoutSeconds;
+        var absoluteTimeout = Expedition.Config.GatherAbsoluteTimeoutSeconds;
+        var secondsSinceDelta = (DateTime.Now - lastDeltaChangeTime).TotalSeconds;
+
+        if (gbrIdle && secondsSinceDelta > noDeltaTimeout && noDeltaTimeout > 0)
+        {
+            if (!noDeltaTimeoutStart.HasValue)
+            {
+                // First detection — do a full authoritative rescan to confirm
+                noDeltaTimeoutStart = DateTime.Now;
+                DalamudApi.Log.Information(
+                    $"[Gather:NoDelta] Soft timeout triggered for {task.ItemName} after {secondsSinceDelta:F0}s. " +
+                    $"GBR: enabled={gbrEnabledForDelta}, waiting={gbrWaitingForDelta}. " +
+                    $"Running full inventory rescan to confirm count...");
+                var fullCount = inventoryManager.GetItemCount(task.ItemId, includeSaddlebag: includeSaddlebag);
+                if (fullCount != currentCount)
+                {
+                    DalamudApi.Log.Information(
+                        $"[Gather:NoDelta] Rescan corrected count for {task.ItemName}: cached={currentCount} -> full={fullCount} " +
+                        $"(delta={fullCount - currentCount}). Cache was stale.");
+                    task.QuantityGathered = fullCount;
+                    lastKnownCount = fullCount;
+                    if (fullCount > currentCount)
+                    {
+                        lastDeltaChangeTime = DateTime.Now;
+                        noDeltaTimeoutStart = null;
+                    }
+                    // Reinitialize cache
+                    slotCache.Initialize(task.ItemId, includeSaddlebag);
+                    // Re-check completion with corrected count
+                    if (task.IsComplete)
+                    {
+                        finishingNodeSince = null;
+                        task.Status = GatheringTaskStatus.Completed;
+                        StatusMessage = $"Gathered enough {task.ItemName} (confirmed by rescan).";
+                        DalamudApi.Log.Information(
+                            $"[Gather:NoDelta] Rescan confirmed completion for {task.ItemName}: " +
+                            $"{fullCount}/{task.QuantityNeeded}");
+                        AdvanceToNextTask();
+                        return;
+                    }
+                }
+                else
+                {
+                    DalamudApi.Log.Information(
+                        $"[Gather:NoDelta] Rescan confirmed no change for {task.ItemName}. " +
+                        $"Count: {currentCount}/{task.QuantityNeeded}, delta from baseline: +{currentCount - baselineCount}, " +
+                        $"absoluteTimeout in {absoluteTimeout - secondsSinceDelta:F0}s");
+                }
+            }
+        }
+        else if (!gbrIdle)
+        {
+            // GBR is actively running — reset the soft timeout
+            if (noDeltaTimeoutStart.HasValue)
+            {
+                DalamudApi.Log.Debug($"[Gather:NoDelta] GBR became active, resetting soft timeout for {task.ItemName}.");
+            }
+            noDeltaTimeoutStart = null;
+        }
+
+        // --- TERTIARY: Absolute no-delta timeout (hard) ---
+        if (secondsSinceDelta > absoluteTimeout && absoluteTimeout > 0)
+        {
+            var elapsedSec = (DateTime.Now - taskStartTime).TotalSeconds;
+            DalamudApi.Log.Warning(
+                $"[Gather:HardTimeout] Absolute no-delta timeout ({absoluteTimeout}s) for {task.ItemName}. " +
+                $"Count: {currentCount}/{task.QuantityNeeded}, baseline={baselineCount}, delta=+{currentCount - baselineCount}, " +
+                $"elapsed={elapsedSec:F0}s, GBR: enabled={gbrEnabledForDelta}, waiting={gbrWaitingForDelta}, " +
+                $"idlePolls={gbrIdlePolls}, reEnableFails={consecutiveReEnableFailures}, " +
+                $"resetCycles={resetCyclesWithoutProgress}. Triggering retry.");
+            noDeltaTimeoutStart = null;
+
+            task.RetryCount++;
+            if (task.RetryCount > Expedition.Config.GatherRetryLimit)
+            {
+                task.Status = GatheringTaskStatus.Failed;
+                task.ErrorMessage = $"No gathering progress for {absoluteTimeout}s after {task.RetryCount} attempts.";
+                DalamudApi.Log.Warning(
+                    $"[Gather:Failed] {task.ItemName} FAILED: {task.ErrorMessage} " +
+                    $"(count={currentCount}/{task.QuantityNeeded}, delta=+{currentCount - baselineCount})");
+                AdvanceToNextTask();
+            }
+            else
+            {
+                DalamudApi.Log.Information(
+                    $"[Gather:Retry] Stalled {task.ItemName}, retrying (attempt {task.RetryCount}/{Expedition.Config.GatherRetryLimit})");
+                StartCurrentTask();
+            }
             return;
         }
 
@@ -302,9 +512,8 @@ public sealed class GatheringOrchestrator
 
         if (commandOnlyMode)
         {
-            // Command-only mode: item wasn't in GBR's auto-gather list.
-            // We rely on /gather commands to drive GBR. Re-issue periodically
-            // and re-enable AutoGather if it disables itself.
+            // Command-only mode: item wasn't in GBR's auto-gather list (or AutoGather
+            // refused it and we escalated). We drive GBR via /gather commands instead.
             if (!playerOccupied)
             {
                 var sinceLastCommand = (DateTime.Now - lastCommandReissueTime).TotalSeconds;
@@ -312,9 +521,9 @@ public sealed class GatheringOrchestrator
                 if (!gbrEnabled && sinceLastCommand >= AutoGatherReEnableIntervalSeconds)
                 {
                     DalamudApi.Log.Information(
-                        $"[Command-only] GBR is OFF — re-issuing /gather for {task.ItemName} " +
+                        $"[Gather:CmdOnly] GBR OFF — re-issuing gather command for {task.ItemName} " +
                         $"(need {task.QuantityRemaining} more)");
-                    ChatIpc.GatherItem(task.ItemName);
+                    SendGatherCommand(task);
                     ipc.GatherBuddy.SetAutoGatherEnabled(true);
                     lastCommandReissueTime = DateTime.Now;
                 }
@@ -324,8 +533,8 @@ public sealed class GatheringOrchestrator
                     // (GBR may finish a node cycle and go idle without an auto-gather list entry)
                     if (gbrWaiting)
                     {
-                        DalamudApi.Log.Debug($"[Command-only] GBR waiting, re-issuing /gather for {task.ItemName}");
-                        ChatIpc.GatherItem(task.ItemName);
+                        DalamudApi.Log.Debug($"[Gather:CmdOnly] GBR waiting, re-issuing gather command for {task.ItemName}");
+                        SendGatherCommand(task);
                         lastCommandReissueTime = DateTime.Now;
                     }
                 }
@@ -339,6 +548,11 @@ public sealed class GatheringOrchestrator
         {
             gbrIdlePolls++;
             consecutiveReEnableFailures++;
+
+            DalamudApi.Log.Debug(
+                $"[Gather:GBR] AutoGather OFF for {task.ItemName}: " +
+                $"idlePolls={gbrIdlePolls}, reEnableFails={consecutiveReEnableFailures}/{MaxReEnableFailuresBeforeReset}, " +
+                $"resetCycles={resetCyclesWithoutProgress}/3, playerOccupied={playerOccupied}");
 
             // Don't try to re-enable while the player is in a blocking state (crafting, cutscene, etc.)
             if (playerOccupied)
@@ -357,6 +571,7 @@ public sealed class GatheringOrchestrator
                 // GBR IPC itself is gone — force a fresh availability check
                 ipc.GatherBuddy.CheckAvailability();
                 StatusMessage = $"Waiting for GatherBuddy Reborn... [{task.ItemName}]";
+                DalamudApi.Log.Debug($"[Gather:Dep] GBR IPC unavailable, waiting. reEnableFails -> {consecutiveReEnableFailures - 1}");
                 // Don't count this as a re-enable failure — it's a dependency issue
                 consecutiveReEnableFailures = Math.Max(0, consecutiveReEnableFailures - 1);
                 lastProgressTime = DateTime.Now; // Don't stall-timeout while waiting for deps
@@ -368,7 +583,7 @@ public sealed class GatheringOrchestrator
                 // vnavmesh is building — don't re-enable, just wait
                 var blockReason = depSnapshot.GetBlockReason() ?? "vnavmesh not ready";
                 StatusMessage = $"Waiting: {blockReason} [{task.ItemName}]";
-                DalamudApi.Log.Debug($"Deferring GBR re-enable: {blockReason}");
+                DalamudApi.Log.Debug($"[Gather:Dep] Deferring GBR re-enable: {blockReason} (progress={depSnapshot.NavBuildProgress:P0})");
                 // Don't count navmesh rebuilds as re-enable failures
                 consecutiveReEnableFailures = Math.Max(0, consecutiveReEnableFailures - 1);
                 lastProgressTime = DateTime.Now; // Don't stall-timeout while nav is building
@@ -387,9 +602,68 @@ public sealed class GatheringOrchestrator
                 // Perform a full reset cycle: disable, re-inject the gather list, then re-enable.
                 if (consecutiveReEnableFailures > MaxReEnableFailuresBeforeReset)
                 {
+                    resetCyclesWithoutProgress++;
+
+                    // If we've done multiple full reset cycles with zero inventory progress,
+                    // GBR's AutoGather fundamentally cannot handle this item (common for crystals/clusters).
+                    // Escalation strategy:
+                    //   1st escalation (cycle 3): switch to command-only mode instead of AutoGather list
+                    //   2nd escalation (cycle 6): give up and trigger retry/fail
+                    if (resetCyclesWithoutProgress >= 3 && !commandOnlyMode)
+                    {
+                        // Switch to command-only mode — GBR's AutoGather list doesn't work for this item,
+                        // but /gather commands may still work by directly targeting nodes.
+                        DalamudApi.Log.Warning(
+                            $"[Gather:ResetEscalation] {resetCyclesWithoutProgress} reset cycles with no progress " +
+                            $"for {task.ItemName} ({task.QuantityGathered}/{task.QuantityNeeded}). " +
+                            $"AutoGather list-driven gathering failed — switching to command-only mode.");
+                        commandOnlyMode = true;
+                        resetCyclesWithoutProgress = 0;
+                        consecutiveReEnableFailures = 0;
+                        lastCommandReissueTime = DateTime.MinValue;
+
+                        // Clean up the injected list entry since we're abandoning list-driven mode
+                        CleanupGatherList();
+
+                        // Issue a /gather command and re-enable
+                        SendGatherCommand(task);
+                        ipc.GatherBuddy.SetAutoGatherEnabled(true);
+                        return;
+                    }
+                    else if (resetCyclesWithoutProgress >= 3)
+                    {
+                        // Already in command-only mode and still no progress — truly stuck
+                        DalamudApi.Log.Warning(
+                            $"[Gather:ResetEscalation] {resetCyclesWithoutProgress} reset cycles with no progress " +
+                            $"for {task.ItemName} in command-only mode ({task.QuantityGathered}/{task.QuantityNeeded}). " +
+                            $"Baseline={baselineCount}, delta=+{currentCount - baselineCount}. Triggering retry/fail.");
+                        resetCyclesWithoutProgress = 0;
+                        consecutiveReEnableFailures = 0;
+
+                        task.RetryCount++;
+                        if (task.RetryCount > Expedition.Config.GatherRetryLimit)
+                        {
+                            task.Status = GatheringTaskStatus.Failed;
+                            task.ErrorMessage = $"GBR repeatedly refused to gather {task.ItemName} after {task.RetryCount} attempts.";
+                            DalamudApi.Log.Warning(
+                                $"[Gather:Failed] {task.ItemName} FAILED: {task.ErrorMessage} " +
+                                $"(count={currentCount}/{task.QuantityNeeded})");
+                            AdvanceToNextTask();
+                        }
+                        else
+                        {
+                            DalamudApi.Log.Information(
+                                $"[Gather:Retry] Reset cycle escalation for {task.ItemName}, " +
+                                $"retrying (attempt {task.RetryCount}/{Expedition.Config.GatherRetryLimit})");
+                            StartCurrentTask();
+                        }
+                        return;
+                    }
+
                     DalamudApi.Log.Warning(
-                        $"GBR AutoGather has failed {consecutiveReEnableFailures} consecutive re-enables for {task.ItemName}. " +
-                        "Performing full reset cycle (disable → re-inject list → re-enable).");
+                        $"[Gather:ResetCycle] {consecutiveReEnableFailures} consecutive re-enable failures for {task.ItemName}. " +
+                        $"Full reset cycle {resetCyclesWithoutProgress}/3: disable → re-inject list → re-enable. " +
+                        $"Count: {currentCount}/{task.QuantityNeeded}, delta=+{currentCount - baselineCount}");
 
                     // Full disable to clear any stale GBR state
                     ipc.GatherBuddy.SetAutoGatherEnabled(false);
@@ -402,6 +676,7 @@ public sealed class GatheringOrchestrator
                     SendGatherCommand(task);
                     ipc.GatherBuddy.SetAutoGatherEnabled(true);
 
+                    DalamudApi.Log.Debug($"[Gather:ResetCycle] Reset complete, AutoGather re-enabled. reEnableFails reset to 0.");
                     // Reset the counter — give the fresh cycle a chance
                     consecutiveReEnableFailures = 0;
                     return;
@@ -409,10 +684,17 @@ public sealed class GatheringOrchestrator
 
                 // Normal re-enable attempt
                 DalamudApi.Log.Information(
-                    $"GBR AutoGather is OFF — re-enabling for {task.ItemName} " +
-                    $"(need {task.QuantityRemaining} more, re-enable attempt {consecutiveReEnableFailures}/{MaxReEnableFailuresBeforeReset})");
+                    $"[Gather:ReEnable] GBR OFF — re-enabling for {task.ItemName} " +
+                    $"(need {task.QuantityRemaining} more, attempt {consecutiveReEnableFailures}/{MaxReEnableFailuresBeforeReset}, " +
+                    $"count={currentCount}/{task.QuantityNeeded}, sinceLastDelta={secondsSinceDelta:F0}s)");
                 SendGatherCommand(task);
                 ipc.GatherBuddy.SetAutoGatherEnabled(true);
+            }
+            else
+            {
+                DalamudApi.Log.Debug(
+                    $"[Gather:GBR] Throttled re-enable for {task.ItemName}: {sinceLastReEnable:F0}s since last attempt " +
+                    $"(interval={AutoGatherReEnableIntervalSeconds}s)");
             }
         }
         else
@@ -421,7 +703,8 @@ public sealed class GatheringOrchestrator
             // GBR is enabled and running — reset the failure counter
             if (consecutiveReEnableFailures > 0)
             {
-                DalamudApi.Log.Information($"GBR AutoGather re-enabled successfully after {consecutiveReEnableFailures} failures.");
+                DalamudApi.Log.Information(
+                    $"[Gather:GBR] AutoGather confirmed running after {consecutiveReEnableFailures} failures for {task.ItemName}.");
                 consecutiveReEnableFailures = 0;
             }
         }
@@ -430,18 +713,28 @@ public sealed class GatheringOrchestrator
         var secondsSinceProgress = (DateTime.Now - lastProgressTime).TotalSeconds;
         if (secondsSinceProgress > StallTimeoutSeconds)
         {
+            var elapsedSec = (DateTime.Now - taskStartTime).TotalSeconds;
+            DalamudApi.Log.Warning(
+                $"[Gather:StallTimeout] No inventory progress for {StallTimeoutSeconds / 60:F0}min for {task.ItemName}. " +
+                $"Count: {currentCount}/{task.QuantityNeeded}, baseline={baselineCount}, delta=+{currentCount - baselineCount}, " +
+                $"elapsed={elapsedSec:F0}s, GBR: enabled={gbrEnabled}, waiting={gbrWaiting}, " +
+                $"reEnableFails={consecutiveReEnableFailures}, resetCycles={resetCyclesWithoutProgress}");
+
             task.RetryCount++;
             if (task.RetryCount > Expedition.Config.GatherRetryLimit)
             {
                 task.Status = GatheringTaskStatus.Failed;
                 task.ErrorMessage = $"No gathering progress for {StallTimeoutSeconds / 60:F0} minutes after {task.RetryCount} attempts.";
-                DalamudApi.Log.Warning($"Gathering task failed: {task.ItemName} — {task.ErrorMessage}");
+                DalamudApi.Log.Warning(
+                    $"[Gather:Failed] {task.ItemName} FAILED after stall: {task.ErrorMessage}");
                 AdvanceToNextTask();
             }
             else
             {
                 // Retry: re-send the gather command
-                DalamudApi.Log.Information($"Gathering stalled for {task.ItemName}, retrying (attempt {task.RetryCount})");
+                DalamudApi.Log.Information(
+                    $"[Gather:Retry] Stall timeout for {task.ItemName}, retrying " +
+                    $"(attempt {task.RetryCount}/{Expedition.Config.GatherRetryLimit})");
                 StartCurrentTask();
             }
             return;
@@ -574,6 +867,10 @@ public sealed class GatheringOrchestrator
             || cond[ConditionFlag.BetweenAreas51];
     }
 
+    /// <summary>Formats the count source for logging (cache/fullScan/event).</summary>
+    private static string CountSource(bool usedCache, bool eventTriggered)
+        => eventTriggered ? "event-rescan" : usedCache ? "slot-cache" : "full-scan";
+
     /// <summary>
     /// Sends the appropriate class-specific gather command for the given task.
     /// </summary>
@@ -601,11 +898,41 @@ public sealed class GatheringOrchestrator
         task.Status = GatheringTaskStatus.InProgress;
         taskStartTime = DateTime.Now;
         lastProgressTime = DateTime.Now;
-        lastKnownCount = -1; // Will be seeded from actual inventory on first Update poll
+        lastDeltaChangeTime = DateTime.Now;
+        noDeltaTimeoutStart = null;
+        resetCyclesWithoutProgress = 0;
         gbrIdlePolls = 0;
         consecutiveReEnableFailures = 0;
         lastAutoGatherCheck = DateTime.MinValue;
         finishingNodeSince = null;
+        pollsSinceLastSummary = 0;
+
+        // Initialize slot cache for fast inventory reads during this task
+        var includeSaddlebag = Expedition.Config.IncludeSaddlebagInScans;
+        slotCache.Initialize(task.ItemId, includeSaddlebag);
+
+        // Seed QuantityGathered from actual inventory NOW, not on first Update poll.
+        // This prevents telling GBR "need 400" when we really only need 1.
+        var actualCount = slotCache.LastTotal;
+        task.QuantityGathered = actualCount;
+        lastKnownCount = actualCount;
+        baselineCount = actualCount;
+
+        DalamudApi.Log.Information(
+            $"[Gather:Init] Task={task.ItemName} (id={task.ItemId}), target={task.QuantityNeeded}, " +
+            $"inventoryNow={actualCount}, remaining={task.QuantityRemaining}, saddlebag={includeSaddlebag}, " +
+            $"retryCount={task.RetryCount}, taskIndex={currentTaskIndex}/{taskQueue.Count}");
+
+        // Early completion check — if inventory already meets the target, skip entirely.
+        // This catches cases where items were gathered between queue build and task start.
+        if (task.IsComplete)
+        {
+            task.Status = GatheringTaskStatus.Completed;
+            DalamudApi.Log.Information(
+                $"[Gather:Init] {task.ItemName} already complete ({actualCount}/{task.QuantityNeeded}), skipping.");
+            AdvanceToNextTask();
+            return;
+        }
 
         // Check if this item was skipped during list injection (not in GBR's Gatherables).
         // Common for crystals/shards/clusters which GBR indexes differently.
@@ -614,14 +941,14 @@ public sealed class GatheringOrchestrator
 
         if (commandOnlyMode)
         {
-            DalamudApi.Log.Information($"Item {task.ItemName} not in GBR auto-gather list — using command-only gathering mode.");
+            DalamudApi.Log.Information($"[Gather:Init] {task.ItemName} not in GBR auto-gather list — command-only mode.");
         }
 
         // Don't fire gather commands while the player is occupied —
         // the Update loop will re-enable once the player is free.
         if (IsPlayerOccupied())
         {
-            DalamudApi.Log.Information($"Player occupied, deferring gather command for {task.ItemName}.");
+            DalamudApi.Log.Information($"[Gather:Init] Player occupied, deferring gather command for {task.ItemName}.");
             StatusMessage = $"Waiting to gather {task.ItemName} (player busy)...";
             return;
         }
@@ -629,8 +956,11 @@ public sealed class GatheringOrchestrator
         // Send the gather command to hint GBR and trigger teleport.
         // In command-only mode, use the generic /gather to let GBR pick the best class.
         DalamudApi.Log.Information(
-            $"Starting gather task: {task.ItemName} — GatherType={task.GatherType}, " +
-            $"commandOnly={commandOnlyMode}, need={task.QuantityRemaining} more");
+            $"[Gather:Init] Starting: {task.ItemName} — GatherType={task.GatherType}, " +
+            $"commandOnly={commandOnlyMode}, need={task.QuantityRemaining} more, " +
+            $"noDeltaTimeout={Expedition.Config.GatherNoDeltaTimeoutSeconds}s, " +
+            $"absoluteTimeout={Expedition.Config.GatherAbsoluteTimeoutSeconds}s, " +
+            $"stallTimeout={StallTimeoutSeconds}s, retryLimit={Expedition.Config.GatherRetryLimit}");
         if (commandOnlyMode)
             ChatIpc.GatherItem(task.ItemName);
         else
@@ -646,6 +976,7 @@ public sealed class GatheringOrchestrator
         // In command-only mode, also enable it: the /gather command sets GBR's
         // target, and AutoGather keeps it running after the first node.
         ipc.GatherBuddy.SetAutoGatherEnabled(true);
+        DalamudApi.Log.Debug($"[Gather:Init] AutoGather enabled. GBR state: enabled={ipc.GatherBuddy.GetAutoGatherEnabled()}");
 
         lastCommandReissueTime = DateTime.Now;
         StatusMessage = $"Gathering {task.ItemName} (need {task.QuantityRemaining} more)...";
@@ -664,13 +995,34 @@ public sealed class GatheringOrchestrator
         // Disable auto gather before switching targets
         ipc.GatherBuddy.SetAutoGatherEnabled(false);
 
+        // Log final state of the completed/failed task
+        if (prevTask != null)
+        {
+            var prevElapsed = (DateTime.Now - taskStartTime).TotalSeconds;
+            DalamudApi.Log.Information(
+                $"[Gather:Advance] Leaving task: {prevTask.ItemName} — status={prevTask.Status}, " +
+                $"count={prevTask.QuantityGathered}/{prevTask.QuantityNeeded}, " +
+                $"retries={prevTask.RetryCount}, elapsed={prevElapsed:F0}s");
+        }
+
         currentTaskIndex++;
         if (currentTaskIndex >= taskQueue.Count)
         {
             CleanupGatherList();
             State = GatheringOrchestratorState.Completed;
+
+            // Log a final summary of all tasks
+            var completedCount = 0;
+            var failedCount = 0;
+            for (var i = 0; i < taskQueue.Count; i++)
+            {
+                if (taskQueue[i].Status == GatheringTaskStatus.Completed) completedCount++;
+                else if (taskQueue[i].Status == GatheringTaskStatus.Failed) failedCount++;
+            }
+            DalamudApi.Log.Information(
+                $"[Gather:Done] All {taskQueue.Count} gathering tasks finished: " +
+                $"{completedCount} completed, {failedCount} failed.");
             StatusMessage = "All gathering tasks complete.";
-            DalamudApi.Log.Information(StatusMessage);
             return;
         }
 
@@ -680,8 +1032,9 @@ public sealed class GatheringOrchestrator
         var nextType = nextTask.GatherType.ToString();
         var classSwitch = prevTask != null && prevTask.GatherType != nextTask.GatherType;
         DalamudApi.Log.Information(
-            $"Advancing to task [{currentTaskIndex}]: {nextTask.ItemName} ({nextType}) " +
-            $"from {prevTask?.ItemName ?? "none"} ({prevType})" +
+            $"[Gather:Advance] Task [{currentTaskIndex}/{taskQueue.Count}]: {nextTask.ItemName} ({nextType}) " +
+            $"from {prevTask?.ItemName ?? "none"} ({prevType}), " +
+            $"target={nextTask.QuantityNeeded}, remaining={nextTask.QuantityRemaining}" +
             (classSwitch ? " — CLASS SWITCH REQUIRED" : ""));
 
         // Small delay before starting next task (let GBR settle).

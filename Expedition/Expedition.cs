@@ -88,6 +88,9 @@ public sealed class Expedition : IDalamudPlugin
         DalamudApi.PluginInterface.UiBuilder.OpenMainUi += OnOpenMainUI;
         DalamudApi.Framework.Update += OnFrameworkUpdate;
 
+        // Subscribe to inventory change events for faster gathering completion detection
+        InventoryManager.SubscribeInventoryEvents();
+
         DalamudApi.Log.Information("Expedition loaded.");
     }
 
@@ -101,6 +104,7 @@ public sealed class Expedition : IDalamudPlugin
         DalamudApi.CommandManager.RemoveHandler(CommandName);
         DalamudApi.CommandManager.RemoveHandler(CommandAlias);
 
+        InventoryManager.UnsubscribeInventoryEvents();
         InsightsEngine.Dispose();
         WorkflowEngine.Dispose();
         RecipeResolver.MobDropLookup.Dispose();

@@ -19,6 +19,8 @@ public sealed class Configuration : IPluginConfiguration
     public bool UseCollectableGathering { get; set; } = true;
     public int GatherRetryLimit { get; set; } = 3;
     public int GatherQuantityBuffer { get; set; } = 0;
+    public int GatherNoDeltaTimeoutSeconds { get; set; } = 30;
+    public int GatherAbsoluteTimeoutSeconds { get; set; } = 60;
     public bool OptimizeGatherRoute { get; set; } = true;
     public bool PrioritizeTimedNodes { get; set; } = true;
     public bool GatherNormalWhileWaiting { get; set; } = true;
