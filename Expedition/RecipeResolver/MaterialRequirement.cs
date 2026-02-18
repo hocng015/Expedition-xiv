@@ -39,6 +39,13 @@ public sealed class MaterialRequirement
     /// <summary>The type of gathering class needed, if gatherable.</summary>
     public GatherType GatherType { get; init; } = GatherType.None;
 
+    /// <summary>
+    /// The gathering node level for this item (from GatheringPointBase).
+    /// Used for pre-flight validation: GBR filters out items where the node level
+    /// exceeds the player's gathering class level threshold.
+    /// </summary>
+    public int GatherNodeLevel { get; init; }
+
     // --- Timed Node Metadata ---
 
     /// <summary>True if this item only spawns at specific Eorzean times.</summary>

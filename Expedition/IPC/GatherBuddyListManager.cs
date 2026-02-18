@@ -42,6 +42,12 @@ public sealed class GatherBuddyListManager
     public string LastError { get; private set; } = string.Empty;
 
     /// <summary>
+    /// The GBR plugin instance obtained via reflection.
+    /// Exposed so that <see cref="GbrStateTracker"/> can probe AutoGather internals.
+    /// </summary>
+    public object? GbrPluginInstance => gbrPluginInstance;
+
+    /// <summary>
     /// Item IDs that were skipped during the last SetGatherList call because
     /// they couldn't be found in GBR's Gatherables/Fishes dictionaries.
     /// The orchestrator uses this to fall back to command-only gathering for these items.
@@ -250,7 +256,119 @@ public sealed class GatherBuddyListManager
                 args[i] = null; // optional folder parameter
             addListMethod.Invoke(listsManager, args);
 
+            // Force GBR to re-scan its active items list so it recognizes the new list immediately.
+            // Without this, GBR may use a stale internal cache and report ListExhausted.
+            if (setActiveItemsMethod != null)
+            {
+                try
+                {
+                    setActiveItemsMethod.Invoke(listsManager, null);
+                    DalamudApi.Log.Information("Called SetActiveItems to refresh GBR's active item cache.");
+                }
+                catch (Exception ex)
+                {
+                    DalamudApi.Log.Warning($"SetActiveItems call failed (non-critical): {ex.Message}");
+                }
+            }
+
             DalamudApi.Log.Information($"Created GBR auto-gather list '{ExpeditionListName}' with {addedCount} items.");
+
+            // Diagnostic: verify GBR actually has our list and items after injection
+            try
+            {
+                var allLists = listsProp?.GetValue(listsManager);
+                if (allLists is System.Collections.IEnumerable allListsEnum)
+                {
+                    var listCount = 0;
+                    var expeditionListFound = false;
+                    foreach (var l in allListsEnum)
+                    {
+                        listCount++;
+                        var lName = listNameProp?.GetValue(l) as string;
+                        var lEnabled = listEnabledProp?.GetValue(l) as bool? ?? false;
+                        if (lName == ExpeditionListName)
+                        {
+                            expeditionListFound = true;
+                            // Check items in our list
+                            var itemsProp = l.GetType().GetProperty("Items");
+                            var quantitiesProp = l.GetType().GetProperty("Quantities");
+                            var enabledItemsProp = l.GetType().GetProperty("EnabledItems");
+                            var itemCount = 0;
+                            if (itemsProp?.GetValue(l) is System.Collections.IEnumerable itemsEnum)
+                            {
+                                foreach (var item in itemsEnum)
+                                {
+                                    itemCount++;
+                                    // Try to read item details
+                                    var itemIdProp = item.GetType().GetProperty("ItemId");
+                                    var itemNameProp = item.GetType().GetProperty("Name");
+                                    var iid = itemIdProp?.GetValue(item);
+                                    var iname = itemNameProp?.GetValue(item);
+
+                                    // Try to read quantity and enabled state from dictionaries
+                                    var qty = "?";
+                                    var enabled = "?";
+                                    if (quantitiesProp?.GetValue(l) is System.Collections.IDictionary qDict)
+                                    {
+                                        if (qDict.Contains(item))
+                                            qty = qDict[item]?.ToString() ?? "null";
+                                    }
+                                    if (enabledItemsProp?.GetValue(l) is System.Collections.IDictionary eDict)
+                                    {
+                                        if (eDict.Contains(item))
+                                            enabled = eDict[item]?.ToString() ?? "null";
+                                    }
+
+                                    DalamudApi.Log.Information(
+                                        $"[GBR:Diag] List item: id={iid}, name={iname}, qty={qty}, enabled={enabled}");
+                                }
+                            }
+                            DalamudApi.Log.Information(
+                                $"[GBR:Diag] '{ExpeditionListName}' found: enabled={lEnabled}, items={itemCount}");
+                        }
+                    }
+                    DalamudApi.Log.Information(
+                        $"[GBR:Diag] Total lists in GBR: {listCount}, Expedition list found: {expeditionListFound}");
+                }
+
+                // Check what SetActiveItems produced
+                var activeItemsField = listsManager.GetType().GetField("_activeItems",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (activeItemsField != null)
+                {
+                    var activeItems = activeItemsField.GetValue(listsManager);
+                    if (activeItems is System.Collections.ICollection col)
+                    {
+                        DalamudApi.Log.Information($"[GBR:Diag] _activeItems count after SetActiveItems: {col.Count}");
+                        foreach (var ai in col)
+                        {
+                            // Each entry is a tuple (IGatherable Item, uint Quantity)
+                            var aiType = ai.GetType();
+                            var item1 = aiType.GetField("Item1")?.GetValue(ai)
+                                     ?? aiType.GetProperty("Item")?.GetValue(ai);
+                            var item2 = aiType.GetField("Item2")?.GetValue(ai)
+                                     ?? aiType.GetProperty("Quantity")?.GetValue(ai);
+                            var aiItemId = item1?.GetType().GetProperty("ItemId")?.GetValue(item1);
+                            var aiName = item1?.GetType().GetProperty("Name")?.GetValue(item1);
+                            DalamudApi.Log.Information(
+                                $"[GBR:Diag] Active item: id={aiItemId}, name={aiName}, qty={item2}");
+                        }
+                    }
+                    else
+                    {
+                        DalamudApi.Log.Warning($"[GBR:Diag] _activeItems field found but not ICollection: {activeItems?.GetType().Name ?? "null"}");
+                    }
+                }
+                else
+                {
+                    DalamudApi.Log.Warning("[GBR:Diag] Could not find _activeItems field on ListsManager");
+                }
+            }
+            catch (Exception diagEx)
+            {
+                DalamudApi.Log.Warning($"[GBR:Diag] Diagnostic failed: {diagEx.Message}");
+            }
+
             return true;
         }
         catch (Exception ex)
@@ -288,6 +406,19 @@ public sealed class GatherBuddyListManager
             {
                 deleteListMethod.Invoke(listsManager, new[] { listObj });
                 DalamudApi.Log.Information($"Removed GBR auto-gather list '{ExpeditionListName}'.");
+            }
+
+            // Refresh GBR's active item cache after removal
+            if (toDelete.Count > 0 && setActiveItemsMethod != null)
+            {
+                try
+                {
+                    setActiveItemsMethod.Invoke(listsManager, null);
+                }
+                catch (Exception ex)
+                {
+                    DalamudApi.Log.Debug($"SetActiveItems after removal failed (non-critical): {ex.Message}");
+                }
             }
         }
         catch (Exception ex)

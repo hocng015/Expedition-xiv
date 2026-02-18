@@ -187,6 +187,8 @@ public sealed class WorkflowEngine : IDisposable
             IsCraftable = false,
             IsGatherable = true,
             GatherType = gatherItem.GatherClass,
+            GatherNodeLevel = gatherItem.GatherLevel,
+            IsCrystal = gatherItem.IsCrystal,
         };
         ResolvedRecipe = new ResolvedRecipe
         {
@@ -690,6 +692,61 @@ public sealed class WorkflowEngine : IDisposable
                 }
             }
 
+            // Check for skipped tasks (e.g., gathering level too low).
+            // For recipe workflows: skipped materials cause cascading craft failures.
+            // For gather-only workflows: the whole point was to gather these items.
+            // In both cases, fail fast with a clear message.
+            if (gatheringOrchestrator.HasSkippedTasks)
+            {
+                var skippedNames = new List<string>();
+                for (var i = 0; i < gatheringOrchestrator.Tasks.Count; i++)
+                {
+                    var t = gatheringOrchestrator.Tasks[i];
+                    if (t.Status == GatheringTaskStatus.Skipped)
+                        skippedNames.Add($"{t.ItemName} ({t.ErrorMessage})");
+                }
+
+                // Re-check inventory: maybe the player already had enough of the skipped items
+                inventoryManager.UpdateResolvedRecipe(ResolvedRecipe!, config.IncludeSaddlebagInScans);
+                var stillMissing = new List<string>();
+                for (var i = 0; i < gatheringOrchestrator.Tasks.Count; i++)
+                {
+                    var t = gatheringOrchestrator.Tasks[i];
+                    if (t.Status != GatheringTaskStatus.Skipped) continue;
+
+                    // Check if this item is still needed (QuantityRemaining > 0 after inventory refresh)
+                    var gatherMat = ResolvedRecipe!.GatherList.Find(m => m.ItemId == t.ItemId);
+                    if (gatherMat != null && gatherMat.QuantityRemaining > 0)
+                    {
+                        stillMissing.Add($"{t.ItemName} (need {gatherMat.QuantityRemaining} more)");
+                    }
+                }
+
+                if (stillMissing.Count > 0)
+                {
+                    var skipMsg = $"Gathering skipped {skippedNames.Count} item(s) due to insufficient level: " +
+                                  $"{string.Join(", ", stillMissing)}. " +
+                                  "Level up gathering classes or obtain these materials manually.";
+                    AddLog(skipMsg);
+                    DalamudApi.Log.Warning($"[Workflow] {skipMsg}");
+                    DalamudApi.ChatGui.PrintError($"[Expedition] {skipMsg}");
+
+                    // Clean shutdown — level-too-low is a definitive, non-recoverable
+                    // pre-flight failure. End the workflow instead of entering Error state
+                    // which would require a manual Reset click.
+                    gatheringOrchestrator.Stop();
+                    SetStatus(skipMsg);
+                    TransitionTo(WorkflowState.Idle);
+                    return;
+                }
+                else
+                {
+                    // All skipped items are already in inventory — safe to proceed
+                    AddLog($"Note: {skippedNames.Count} gathering tasks were skipped (level too low), " +
+                           "but all materials are already in inventory.");
+                }
+            }
+
             AddLog("Gathering phase complete.");
             inventoryManager.UpdateResolvedRecipe(ResolvedRecipe!, config.IncludeSaddlebagInScans);
 
@@ -987,7 +1044,7 @@ public sealed class WorkflowEngine : IDisposable
         var oldState = CurrentState;
         CurrentState = newState;
 
-        if (newState == WorkflowState.Idle || newState == WorkflowState.Completed)
+        if (newState == WorkflowState.Idle || newState == WorkflowState.Completed || newState == WorkflowState.Error)
             CurrentPhase = WorkflowPhase.None;
 
         DalamudApi.Log.Information($"Workflow: {oldState} -> {newState}");

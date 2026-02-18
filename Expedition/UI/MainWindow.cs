@@ -292,15 +292,31 @@ public sealed class MainWindow
 
         var (gbr, artisan, vnav) = plugin.Ipc.GetAvailability();
 
-        // GBR status
-        Theme.StatusDot(gbr ? Theme.Success : Theme.Error, "GBR");
+        // GBR status: green = available & AutoGather on, amber = available but AutoGather off, red = unavailable
+        if (gbr)
+        {
+            var gbrAutoGatherOn = plugin.Ipc.GatherBuddy.GetAutoGatherEnabled();
+            Theme.StatusDot(gbrAutoGatherOn ? Theme.Success : Theme.Warning, "GBR");
+        }
+        else
+        {
+            Theme.StatusDot(Theme.Error, "GBR");
+        }
         ImGui.SameLine(0, Theme.PadLarge);
 
-        // Artisan status
-        Theme.StatusDot(artisan ? Theme.Success : Theme.Error, "Artisan");
+        // Artisan status: green = available & actively crafting, amber = available but idle, red = unavailable
+        if (artisan)
+        {
+            var artisanBusy = plugin.Ipc.Artisan.GetIsBusy();
+            Theme.StatusDot(artisanBusy ? Theme.Success : Theme.Warning, "Artisan");
+        }
+        else
+        {
+            Theme.StatusDot(Theme.Error, "Artisan");
+        }
         ImGui.SameLine(0, Theme.PadLarge);
 
-        // vnavmesh status: green = ready, amber = building, gray = not detected
+        // vnavmesh status: green = ready, amber = building, red = unavailable
         if (vnav)
         {
             var navReady = plugin.Ipc.DependencyMonitor.GetSnapshot().NavReady;
@@ -308,7 +324,7 @@ public sealed class MainWindow
         }
         else
         {
-            Theme.StatusDot(Theme.TextMuted, "vnav");
+            Theme.StatusDot(Theme.Error, "vnav");
         }
 
         if (!gbr || !artisan)

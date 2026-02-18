@@ -61,6 +61,12 @@ public sealed class GatheringOrchestrator
     private bool commandOnlyMode;
 
     /// <summary>
+    /// Last snapshot of GBR's AutoGather state taken when AutoGather was disabled.
+    /// Used to make targeted recovery decisions instead of blind re-enable attempts.
+    /// </summary>
+    private GbrStateTracker.GbrDisableSnapshot? lastDisableSnapshot;
+
+    /// <summary>
     /// How often to re-issue the /gather command in command-only mode.
     /// GBR's /gather navigates to the item and gathers one node cycle,
     /// so we need to periodically re-send it for continued gathering.
@@ -69,6 +75,17 @@ public sealed class GatheringOrchestrator
 
     /// <summary>When we last sent a /gather command in command-only mode.</summary>
     private DateTime lastCommandReissueTime = DateTime.MinValue;
+
+    /// <summary>
+    /// How many consecutive times GBR immediately disabled after a command-only re-enable.
+    /// Reset to 0 when GBR stays enabled (accepted the command).
+    /// </summary>
+    private int cmdOnlyConsecutiveRefusals;
+
+    /// <summary>
+    /// After this many consecutive refusals in command-only mode, give up and trigger retry/fail.
+    /// </summary>
+    private const int MaxCmdOnlyRefusals = 3;
 
     /// <summary>
     /// How long to wait with no inventory progress before declaring a task stalled.
@@ -231,11 +248,36 @@ public sealed class GatheringOrchestrator
             DalamudApi.Log.Information(
                 $"Gather queue [{i}]: {t.ItemName} (id={t.ItemId}) — " +
                 $"have={t.QuantityGathered}, need={t.QuantityNeeded}, remaining={t.QuantityRemaining}, " +
-                $"type={t.GatherType}, timed={t.IsTimedNode}, collectable={t.IsCollectable}");
+                $"type={t.GatherType}, nodeLevel={t.GatherNodeLevel}, " +
+                $"timed={t.IsTimedNode}, collectable={t.IsCollectable}");
         }
 
-        // Inject all gather items into GBR's auto-gather list via reflection
+        // Pre-flight level check: skip tasks where the player's gathering level is
+        // too low. GBR filters items by: node.Level <= (playerLevel + 5) / 5 * 5.
+        // If we send GBR items it can't gather, it silently drops them and reports
+        // ListExhausted, causing minutes of wasted retry/timeout cycles.
+        SkipUngatherableTasks();
+
+        // Inject all gather items into GBR's auto-gather list via reflection.
+        // This also lazily initializes GatherBuddyListManager if needed.
         InjectGatherList();
+
+        // Ensure the GBR state tracker is initialized AFTER list injection,
+        // because GatherBuddyListManager.Initialize() runs lazily inside InjectGatherList()
+        // and we need GbrPluginInstance to be set before we can probe AutoGather internals.
+        if (!ipc.GbrStateTracker.IsInitialized && ipc.GatherBuddyLists.GbrPluginInstance != null)
+        {
+            ipc.GbrStateTracker.Initialize(ipc.GatherBuddyLists.GbrPluginInstance);
+        }
+
+        // Force-reset GBR's internal state AFTER injecting the new list.
+        // This clears stale task queues, amiss counters, and gather targets from
+        // previous sessions that would cause GBR to immediately reject the new list.
+        if (ipc.GbrStateTracker.IsInitialized)
+        {
+            DalamudApi.Log.Information("[Gather:Start] Pre-start GBR force-reset to clear stale state.");
+            ipc.GbrStateTracker.ForceReset(ipc.GatherBuddy);
+        }
 
         State = GatheringOrchestratorState.Running;
         currentTaskIndex = 0;
@@ -255,7 +297,10 @@ public sealed class GatheringOrchestrator
                 $"count={task?.QuantityGathered ?? 0}/{task?.QuantityNeeded ?? 0}, " +
                 $"taskIndex={currentTaskIndex}/{taskQueue.Count}, " +
                 $"reEnableFails={consecutiveReEnableFailures}, resetCycles={resetCyclesWithoutProgress}");
-            ipc.GatherBuddy.SetAutoGatherEnabled(false);
+
+            // Force-reset GBR's internal state to prevent stale corruption from
+            // carrying over to subsequent gather sessions in the same game session.
+            ipc.GbrStateTracker.ForceReset(ipc.GatherBuddy);
         }
 
         CleanupGatherList();
@@ -353,10 +398,11 @@ public sealed class GatheringOrchestrator
             var secSinceDelta = (DateTime.Now - lastDeltaChangeTime).TotalSeconds;
             var secSinceProgress = (DateTime.Now - lastProgressTime).TotalSeconds;
             var elapsedTotal = (DateTime.Now - taskStartTime).TotalSeconds;
+            var lastReason = lastDisableSnapshot?.Reason.ToString() ?? "none";
             DalamudApi.Log.Information(
                 $"[Gather:Summary] {task.ItemName}: {currentCount}/{task.QuantityNeeded} " +
                 $"(baseline={baselineCount}, delta=+{currentCount - baselineCount}) | " +
-                $"GBR: enabled={gbrEnabledSummary}, waiting={gbrWaitingSummary} | " +
+                $"GBR: enabled={gbrEnabledSummary}, waiting={gbrWaitingSummary}, lastReason={lastReason} | " +
                 $"cmdOnly={commandOnlyMode}, reEnableFails={consecutiveReEnableFailures}, " +
                 $"resetCycles={resetCyclesWithoutProgress}, idlePolls={gbrIdlePolls} | " +
                 $"sinceLastDelta={secSinceDelta:F0}s, sinceProgress={secSinceProgress:F0}s, " +
@@ -520,22 +566,63 @@ public sealed class GatheringOrchestrator
 
                 if (!gbrEnabled && sinceLastCommand >= AutoGatherReEnableIntervalSeconds)
                 {
+                    // Track how many times GBR immediately refuses commands
+                    cmdOnlyConsecutiveRefusals++;
+
+                    if (cmdOnlyConsecutiveRefusals > MaxCmdOnlyRefusals)
+                    {
+                        // GBR fundamentally cannot gather this item. Stop spamming commands
+                        // and let the no-delta / absolute timeout advance the task.
+                        var cmdElapsed = (DateTime.Now - taskStartTime).TotalSeconds;
+                        DalamudApi.Log.Warning(
+                            $"[Gather:CmdOnly:GaveUp] GBR refused {cmdOnlyConsecutiveRefusals} consecutive commands " +
+                            $"for {task.ItemName} ({task.QuantityGathered}/{task.QuantityNeeded}). " +
+                            $"Reason: {lastDisableSnapshot?.Reason.ToString() ?? "n/a"}. " +
+                            $"Giving up — triggering retry/fail. Elapsed: {cmdElapsed:F0}s");
+                        StatusMessage = $"GBR cannot gather {task.ItemName} — waiting for timeout to advance...";
+
+                        // Trigger retry/fail immediately instead of waiting for the full timeout
+                        task.RetryCount++;
+                        if (task.RetryCount > Expedition.Config.GatherRetryLimit)
+                        {
+                            task.Status = GatheringTaskStatus.Failed;
+                            task.ErrorMessage = $"GBR refuses to gather {task.ItemName} (both list and command modes failed).";
+                            DalamudApi.Log.Warning(
+                                $"[Gather:Failed] {task.ItemName} FAILED after {task.RetryCount} attempts: {task.ErrorMessage}");
+                            AdvanceToNextTask();
+                        }
+                        else
+                        {
+                            DalamudApi.Log.Information(
+                                $"[Gather:Retry] {task.ItemName} retry {task.RetryCount}/{Expedition.Config.GatherRetryLimit} " +
+                                $"— GBR command-only mode exhausted.");
+                            StartCurrentTask();
+                        }
+                        return;
+                    }
+
                     DalamudApi.Log.Information(
                         $"[Gather:CmdOnly] GBR OFF — re-issuing gather command for {task.ItemName} " +
-                        $"(need {task.QuantityRemaining} more)");
+                        $"(need {task.QuantityRemaining} more, refusal {cmdOnlyConsecutiveRefusals}/{MaxCmdOnlyRefusals})");
                     SendGatherCommand(task);
                     ipc.GatherBuddy.SetAutoGatherEnabled(true);
                     lastCommandReissueTime = DateTime.Now;
                 }
-                else if (gbrEnabled && sinceLastCommand >= CommandReissueIntervalSeconds)
+                else if (gbrEnabled)
                 {
-                    // Periodically re-issue /gather to keep GBR targeted on the right item
-                    // (GBR may finish a node cycle and go idle without an auto-gather list entry)
-                    if (gbrWaiting)
+                    // GBR accepted the command and is running — reset refusal counter
+                    cmdOnlyConsecutiveRefusals = 0;
+
+                    if (sinceLastCommand >= CommandReissueIntervalSeconds)
                     {
-                        DalamudApi.Log.Debug($"[Gather:CmdOnly] GBR waiting, re-issuing gather command for {task.ItemName}");
-                        SendGatherCommand(task);
-                        lastCommandReissueTime = DateTime.Now;
+                        // Periodically re-issue /gather to keep GBR targeted on the right item
+                        // (GBR may finish a node cycle and go idle without an auto-gather list entry)
+                        if (gbrWaiting)
+                        {
+                            DalamudApi.Log.Debug($"[Gather:CmdOnly] GBR waiting, re-issuing gather command for {task.ItemName}");
+                            SendGatherCommand(task);
+                            lastCommandReissueTime = DateTime.Now;
+                        }
                     }
                 }
             }
@@ -549,9 +636,11 @@ public sealed class GatheringOrchestrator
             gbrIdlePolls++;
             consecutiveReEnableFailures++;
 
+            var disableReason = lastDisableSnapshot?.Reason.ToString() ?? "n/a";
             DalamudApi.Log.Debug(
                 $"[Gather:GBR] AutoGather OFF for {task.ItemName}: " +
-                $"idlePolls={gbrIdlePolls}, reEnableFails={consecutiveReEnableFailures}/{MaxReEnableFailuresBeforeReset}, " +
+                $"reason={disableReason}, idlePolls={gbrIdlePolls}, " +
+                $"reEnableFails={consecutiveReEnableFailures}/{MaxReEnableFailuresBeforeReset}, " +
                 $"resetCycles={resetCyclesWithoutProgress}/3, playerOccupied={playerOccupied}");
 
             // Don't try to re-enable while the player is in a blocking state (crafting, cutscene, etc.)
@@ -559,6 +648,93 @@ public sealed class GatheringOrchestrator
             {
                 StatusMessage = $"Waiting for player to be free before gathering {task.ItemName}...";
                 return;
+            }
+
+            // --- Reason-aware early exits ---
+            // Use the snapshot captured in OnGbrEnabledChanged to make targeted recovery decisions
+            // instead of blindly re-enabling. These are "terminal" reasons that won't resolve by retrying.
+            if (lastDisableSnapshot != null)
+            {
+                var reason = lastDisableSnapshot.Reason;
+
+                if (reason == GbrDisableReason.UserDisabled)
+                {
+                    // User manually turned off AutoGather — respect their intent.
+                    DalamudApi.Log.Warning(
+                        $"[Gather:GBR:UserStop] User disabled AutoGather while gathering {task.ItemName}. Stopping.");
+                    Stop();
+                    return;
+                }
+
+                if (reason == GbrDisableReason.InventoryFull)
+                {
+                    // Inventory full — retrying won't help. Fail the task with a clear message.
+                    task.Status = GatheringTaskStatus.Failed;
+                    task.ErrorMessage = "Inventory full — make space and retry.";
+                    DalamudApi.Log.Warning(
+                        $"[Gather:GBR:InvFull] {task.ItemName} FAILED: {task.ErrorMessage} " +
+                        $"(count={currentCount}/{task.QuantityNeeded})");
+                    lastDisableSnapshot = null;
+                    AdvanceToNextTask();
+                    return;
+                }
+
+                if (reason == GbrDisableReason.MissingPlugin || reason == GbrDisableReason.QuestIncomplete)
+                {
+                    // Missing dependency or quest — can't be fixed at runtime.
+                    task.Status = GatheringTaskStatus.Failed;
+                    task.ErrorMessage = $"GBR: {lastDisableSnapshot.AutoStatus}";
+                    DalamudApi.Log.Warning(
+                        $"[Gather:GBR:Prereq] {task.ItemName} FAILED: {task.ErrorMessage}");
+                    lastDisableSnapshot = null;
+                    AdvanceToNextTask();
+                    return;
+                }
+
+                // AmissAtNode — GBR repeatedly failing at nodes. Skip the slow 3-reset-cycle
+                // escalation and switch to command-only mode immediately.
+                // Don't re-enable AutoGather — let the command-only loop handle it.
+                if (reason == GbrDisableReason.AmissAtNode && !commandOnlyMode)
+                {
+                    DalamudApi.Log.Warning(
+                        $"[Gather:GBR:Amiss] {task.ItemName}: GBR amiss at node (count={lastDisableSnapshot.ConsecutiveAmissCount}). " +
+                        $"Switching to command-only mode immediately (no AutoGather re-enable).");
+                    commandOnlyMode = true;
+                    consecutiveReEnableFailures = 0;
+                    resetCyclesWithoutProgress = 0;
+                    lastCommandReissueTime = DateTime.MinValue;
+                    cmdOnlyConsecutiveRefusals = 0;
+                    CleanupGatherList();
+                    SendGatherCommand(task);
+                    // Don't re-enable AutoGather — the command-only loop will handle it
+                    lastDisableSnapshot = null;
+                    return;
+                }
+
+                // ListExhausted — GBR thinks there's nothing to gather, but we still need items.
+                // GBR's internal quantity tracking disagrees with ours. Re-injecting the list
+                // won't help because GBR will re-check its own inventory and reach the same
+                // conclusion. Switch to command-only mode immediately — /gather commands
+                // bypass the list system and directly target nodes.
+                // IMPORTANT: Do NOT re-enable AutoGather here — there's no list, so GBR would
+                // immediately disable again, triggering the refusal counter and killing the task.
+                if (reason == GbrDisableReason.ListExhausted && !commandOnlyMode)
+                {
+                    DalamudApi.Log.Warning(
+                        $"[Gather:GBR:ListExhausted] {task.ItemName}: GBR list reports exhausted " +
+                        $"(hasItems=False) but we still need {task.QuantityRemaining} more. " +
+                        $"GBR's quantity tracking disagrees — switching to command-only mode (no AutoGather re-enable).");
+                    commandOnlyMode = true;
+                    consecutiveReEnableFailures = 0;
+                    resetCyclesWithoutProgress = 0;
+                    lastCommandReissueTime = DateTime.MinValue;
+                    cmdOnlyConsecutiveRefusals = 0;
+                    CleanupGatherList();
+                    SendGatherCommand(task);
+                    // Don't re-enable AutoGather — the command-only loop will handle it
+                    lastDisableSnapshot = null;
+                    return;
+                }
             }
 
             // --- Dependency-aware re-enable ---
@@ -662,11 +838,13 @@ public sealed class GatheringOrchestrator
 
                     DalamudApi.Log.Warning(
                         $"[Gather:ResetCycle] {consecutiveReEnableFailures} consecutive re-enable failures for {task.ItemName}. " +
-                        $"Full reset cycle {resetCyclesWithoutProgress}/3: disable → re-inject list → re-enable. " +
+                        $"Full reset cycle {resetCyclesWithoutProgress}/3: force-reset → re-inject list → re-enable. " +
                         $"Count: {currentCount}/{task.QuantityNeeded}, delta=+{currentCount - baselineCount}");
 
-                    // Full disable to clear any stale GBR state
-                    ipc.GatherBuddy.SetAutoGatherEnabled(false);
+                    // Force-reset GBR's internal AutoGather state via reflection.
+                    // This clears stale task queues, amiss counters, stuck timers, and
+                    // gather targets — equivalent to a soft restart of AutoGather.
+                    ipc.GbrStateTracker.ForceReset(ipc.GatherBuddy);
 
                     // Re-inject the gather list from scratch
                     CleanupGatherList();
@@ -676,7 +854,7 @@ public sealed class GatheringOrchestrator
                     SendGatherCommand(task);
                     ipc.GatherBuddy.SetAutoGatherEnabled(true);
 
-                    DalamudApi.Log.Debug($"[Gather:ResetCycle] Reset complete, AutoGather re-enabled. reEnableFails reset to 0.");
+                    DalamudApi.Log.Debug($"[Gather:ResetCycle] Force-reset complete, AutoGather re-enabled. reEnableFails reset to 0.");
                     // Reset the counter — give the fresh cycle a chance
                     consecutiveReEnableFailures = 0;
                     return;
@@ -685,10 +863,12 @@ public sealed class GatheringOrchestrator
                 // Normal re-enable attempt
                 DalamudApi.Log.Information(
                     $"[Gather:ReEnable] GBR OFF — re-enabling for {task.ItemName} " +
-                    $"(need {task.QuantityRemaining} more, attempt {consecutiveReEnableFailures}/{MaxReEnableFailuresBeforeReset}, " +
+                    $"(reason={disableReason}, need {task.QuantityRemaining} more, " +
+                    $"attempt {consecutiveReEnableFailures}/{MaxReEnableFailuresBeforeReset}, " +
                     $"count={currentCount}/{task.QuantityNeeded}, sinceLastDelta={secondsSinceDelta:F0}s)");
                 SendGatherCommand(task);
                 ipc.GatherBuddy.SetAutoGatherEnabled(true);
+                lastDisableSnapshot = null; // Consumed
             }
             else
             {
@@ -804,17 +984,50 @@ public sealed class GatheringOrchestrator
     }
 
     /// <summary>
+    /// Returns true if any tasks were skipped (e.g., due to insufficient gathering level).
+    /// </summary>
+    public bool HasSkippedTasks
+    {
+        get
+        {
+            for (var i = 0; i < taskQueue.Count; i++)
+                if (taskQueue[i].Status == GatheringTaskStatus.Skipped) return true;
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Injects all queued items into GBR's auto-gather list via reflection.
     /// This is what enables GBR's AutoGather to know what to gather.
+    ///
+    /// IMPORTANT: GBR treats list quantities as ABSOLUTE inventory targets, not deltas.
+    /// It checks: InventoryManager.GetInventoryItemCount(itemId) &lt; quantity.
+    /// If the player already has >= quantity, GBR considers the item "done" and skips it.
+    /// So we must inject (currentInventory + remaining) as the target, not just remaining.
     /// </summary>
     private void InjectGatherList()
     {
+        var inventoryManager = Expedition.Instance.InventoryManager;
+        var includeSaddlebag = Expedition.Config.IncludeSaddlebagInScans;
         var items = new List<(uint, uint)>(taskQueue.Count);
         for (var i = 0; i < taskQueue.Count; i++)
         {
             var t = taskQueue[i];
-            if (t.Status != GatheringTaskStatus.Completed && t.Status != GatheringTaskStatus.Failed)
-                items.Add((t.ItemId, (uint)t.QuantityRemaining));
+            if (t.Status != GatheringTaskStatus.Completed && t.Status != GatheringTaskStatus.Failed
+                && t.Status != GatheringTaskStatus.Skipped)
+            {
+                // GBR uses absolute inventory targets: it checks GetInventoryItemCount(itemId) < quantity.
+                // We need to inject (currentCount + remaining) so GBR sees there's still work to do.
+                // Note: GBR only checks main inventory (not saddlebag), so we use the same source.
+                var currentInInventory = (uint)inventoryManager.GetItemCount(t.ItemId, includeSaddlebag: false);
+                var absoluteTarget = currentInInventory + (uint)t.QuantityRemaining;
+                items.Add((t.ItemId, absoluteTarget));
+
+                DalamudApi.Log.Debug(
+                    $"[Gather:Inject] {t.ItemName} (id={t.ItemId}): " +
+                    $"inInventory={currentInInventory}, remaining={t.QuantityRemaining}, " +
+                    $"absoluteTarget={absoluteTarget} (GBR needs inv < target to gather)");
+            }
         }
 
         if (items.Count == 0) return;
@@ -872,6 +1085,121 @@ public sealed class GatheringOrchestrator
         => eventTriggered ? "event-rescan" : usedCache ? "slot-cache" : "full-scan";
 
     /// <summary>
+    /// Pre-flight check: marks tasks as Skipped when the player's gathering level
+    /// is too low to access the required nodes.
+    ///
+    /// GBR filters items by: node.Level &lt;= (playerLevel + 5) / 5 * 5.
+    /// If all of a task's nodes exceed this threshold, GBR will silently drop
+    /// the item from _gatherableItems, causing ListExhausted and wasted retries.
+    /// </summary>
+    private void SkipUngatherableTasks()
+    {
+        try
+        {
+            var minerLevel = PlayerState.JobSwitchManager.GetPlayerJobLevel(PlayerState.JobSwitchManager.MIN);
+            var botanistLevel = PlayerState.JobSwitchManager.GetPlayerJobLevel(PlayerState.JobSwitchManager.BTN);
+            var fisherLevel = PlayerState.JobSwitchManager.GetPlayerJobLevel(PlayerState.JobSwitchManager.FSH);
+
+            if (minerLevel < 0 && botanistLevel < 0 && fisherLevel < 0)
+            {
+                DalamudApi.Log.Debug("[Gather:LevelCheck] Player levels unavailable — skipping pre-flight level check.");
+                return;
+            }
+
+            // Treat unreadable levels as 0 for safety (will skip items requiring that class)
+            if (minerLevel < 0) minerLevel = 0;
+            if (botanistLevel < 0) botanistLevel = 0;
+            if (fisherLevel < 0) fisherLevel = 0;
+
+            // GBR's threshold formula: rounds up to next multiple of 5
+            var minerThreshold = (minerLevel + 5) / 5 * 5;
+            var botanistThreshold = (botanistLevel + 5) / 5 * 5;
+            var fisherThreshold = (fisherLevel + 5) / 5 * 5;
+
+            DalamudApi.Log.Information(
+                $"[Gather:LevelCheck] Player gathering levels: " +
+                $"MIN={minerLevel} (threshold={minerThreshold}), " +
+                $"BTN={botanistLevel} (threshold={botanistThreshold}), " +
+                $"FSH={fisherLevel} (threshold={fisherThreshold})");
+
+            var skippedCount = 0;
+            for (var i = 0; i < taskQueue.Count; i++)
+            {
+                var t = taskQueue[i];
+                if (t.Status == GatheringTaskStatus.Completed || t.Status == GatheringTaskStatus.Failed)
+                    continue;
+                if (t.QuantityRemaining <= 0)
+                    continue;
+
+                // If GatherNodeLevel wasn't populated (e.g. StartGatherOnly path), try
+                // resolving it from the gather cache so the level check isn't silently skipped.
+                var nodeLevel = t.GatherNodeLevel;
+                if (nodeLevel <= 0)
+                {
+                    nodeLevel = Expedition.Instance.RecipeResolver.GetGatherNodeLevel(t.ItemId);
+                    if (nodeLevel > 0)
+                    {
+                        DalamudApi.Log.Debug(
+                            $"[Gather:LevelCheck] {t.ItemName}: GatherNodeLevel was 0, resolved to {nodeLevel} from cache.");
+                    }
+                    else
+                    {
+                        DalamudApi.Log.Debug(
+                            $"[Gather:LevelCheck] {t.ItemName}: GatherNodeLevel unknown (0) — skipping level check.");
+                        continue;
+                    }
+                }
+
+                var threshold = t.GatherType switch
+                {
+                    GatherType.Miner => minerThreshold,
+                    GatherType.Botanist => botanistThreshold,
+                    GatherType.Fisher => fisherThreshold,
+                    _ => int.MaxValue, // Unknown type — don't skip
+                };
+
+                if (nodeLevel > threshold)
+                {
+                    var className = t.GatherType switch
+                    {
+                        GatherType.Miner => "Miner",
+                        GatherType.Botanist => "Botanist",
+                        GatherType.Fisher => "Fisher",
+                        _ => "Gatherer",
+                    };
+                    var playerLevel = t.GatherType switch
+                    {
+                        GatherType.Miner => minerLevel,
+                        GatherType.Botanist => botanistLevel,
+                        GatherType.Fisher => fisherLevel,
+                        _ => 0,
+                    };
+
+                    t.Status = GatheringTaskStatus.Skipped;
+                    t.ErrorMessage = $"{className} Lv{playerLevel} too low for Lv{nodeLevel} nodes " +
+                                     $"(GBR threshold={threshold}).";
+                    DalamudApi.Log.Warning(
+                        $"[Gather:LevelCheck] SKIPPING {t.ItemName}: {t.ErrorMessage} " +
+                        $"Need {t.QuantityRemaining} more.");
+                    skippedCount++;
+                }
+            }
+
+            if (skippedCount > 0)
+            {
+                DalamudApi.Log.Warning(
+                    $"[Gather:LevelCheck] Skipped {skippedCount}/{taskQueue.Count} tasks due to insufficient gathering level. " +
+                    "Level up your gathering classes or obtain these materials another way.");
+            }
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Debug($"[Gather:LevelCheck] Pre-flight check failed: {ex.Message}");
+            // Non-fatal — continue with normal gathering, GBR will handle it (with retries)
+        }
+    }
+
+    /// <summary>
     /// Sends the appropriate class-specific gather command for the given task.
     /// </summary>
     private static void SendGatherCommand(GatheringTask task)
@@ -895,6 +1223,15 @@ public sealed class GatheringOrchestrator
         var task = CurrentTask;
         if (task == null) return;
 
+        // Skip tasks that were already marked as Skipped (e.g., by level pre-flight check)
+        if (task.Status == GatheringTaskStatus.Skipped)
+        {
+            DalamudApi.Log.Information(
+                $"[Gather:Init] Skipping {task.ItemName}: {task.ErrorMessage}");
+            AdvanceToNextTask();
+            return;
+        }
+
         task.Status = GatheringTaskStatus.InProgress;
         taskStartTime = DateTime.Now;
         lastProgressTime = DateTime.Now;
@@ -903,9 +1240,11 @@ public sealed class GatheringOrchestrator
         resetCyclesWithoutProgress = 0;
         gbrIdlePolls = 0;
         consecutiveReEnableFailures = 0;
+        cmdOnlyConsecutiveRefusals = 0;
         lastAutoGatherCheck = DateTime.MinValue;
         finishingNodeSince = null;
         pollsSinceLastSummary = 0;
+        lastDisableSnapshot = null;
 
         // Initialize slot cache for fast inventory reads during this task
         var includeSaddlebag = Expedition.Config.IncludeSaddlebagInScans;
@@ -1014,14 +1353,16 @@ public sealed class GatheringOrchestrator
             // Log a final summary of all tasks
             var completedCount = 0;
             var failedCount = 0;
+            var skippedCount = 0;
             for (var i = 0; i < taskQueue.Count; i++)
             {
                 if (taskQueue[i].Status == GatheringTaskStatus.Completed) completedCount++;
                 else if (taskQueue[i].Status == GatheringTaskStatus.Failed) failedCount++;
+                else if (taskQueue[i].Status == GatheringTaskStatus.Skipped) skippedCount++;
             }
             DalamudApi.Log.Information(
                 $"[Gather:Done] All {taskQueue.Count} gathering tasks finished: " +
-                $"{completedCount} completed, {failedCount} failed.");
+                $"{completedCount} completed, {failedCount} failed, {skippedCount} skipped.");
             StatusMessage = "All gathering tasks complete.";
             return;
         }
@@ -1053,15 +1394,57 @@ public sealed class GatheringOrchestrator
 
     private void OnGbrEnabledChanged(bool enabled)
     {
+        // Retry GbrStateTracker initialization if it failed during Start()
+        // (e.g. because GatherBuddyListManager wasn't initialized yet)
+        if (!ipc.GbrStateTracker.IsInitialized && ipc.GatherBuddyLists.GbrPluginInstance != null)
+        {
+            ipc.GbrStateTracker.Initialize(ipc.GatherBuddyLists.GbrPluginInstance);
+        }
+
         var task = CurrentTask;
         if (!enabled && State == GatheringOrchestratorState.Running && task != null)
         {
-            DalamudApi.Log.Warning($"GBR AutoGather was disabled externally while gathering " +
-                $"{task.ItemName} ({task.QuantityGathered}/{task.QuantityNeeded}). Will re-enable on next poll.");
+            // Capture GBR's internal state NOW — before it has a chance to clear AutoStatus.
+            // The IPC callback already captured LastDisableStatusText in GatherBuddyIpc.
+            var snapshot = ipc.GbrStateTracker.GetSnapshot();
+            lastDisableSnapshot = snapshot;
+
+            // Also incorporate the IPC-captured status text if reflection didn't get it
+            var ipcStatus = ipc.GatherBuddy.LastDisableStatusText;
+            var statusForLog = !string.IsNullOrEmpty(snapshot.AutoStatus)
+                ? snapshot.AutoStatus
+                : ipcStatus;
+
+            DalamudApi.Log.Warning(
+                $"[Gather:GBR:Disabled] {task.ItemName} ({task.QuantityGathered}/{task.QuantityNeeded}): " +
+                $"reason={snapshot.Reason}, autoStatus=\"{statusForLog}\", " +
+                $"tasks={snapshot.TaskQueueCount}, busy={snapshot.TaskManagerBusy}, " +
+                $"hasItems={snapshot.HasItemsToGather}, amiss={snapshot.ConsecutiveAmissCount}, " +
+                $"hasTarget={snapshot.HasGatherTarget}");
+
+            // Run deep diagnostics when GBR reports no items to gather despite our list injection.
+            // Trigger on: (a) HasItemsToGather=false from reflection, OR (b) AutoStatus="Idle..."
+            // with no gather target (indicates AbortAutoGather ran because _gatherableItems was empty).
+            var shouldDiagnose = !snapshot.HasItemsToGather
+                || (statusForLog == "Idle..." && !snapshot.HasGatherTarget
+                    && snapshot.TaskQueueCount == 0 && !snapshot.TaskManagerBusy);
+            if (shouldDiagnose && ipc.GbrStateTracker.IsInitialized)
+            {
+                DalamudApi.Log.Warning(
+                    $"[Gather:GBR:Disabled] No items/targets detected (reason={snapshot.Reason}) — running deep diagnostic...");
+                ipc.GbrStateTracker.DiagnoseEmptyGatherableItems();
+            }
+        }
+        else if (!enabled)
+        {
+            // Not running — just log for reference
+            lastDisableSnapshot = ipc.GbrStateTracker.GetSnapshot();
+            DalamudApi.Log.Debug($"GBR AutoGather disabled (not gathering). reason={lastDisableSnapshot.Reason}");
         }
         else
         {
-            DalamudApi.Log.Debug($"GBR AutoGather enabled changed: {enabled}");
+            lastDisableSnapshot = null; // Clear on re-enable
+            DalamudApi.Log.Debug($"GBR AutoGather enabled.");
         }
     }
 }

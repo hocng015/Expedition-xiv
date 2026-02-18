@@ -69,6 +69,14 @@ public sealed class CraftingOrchestrator
     /// </summary>
     private bool artisanEverReportedBusy;
 
+    /// <summary>
+    /// CraftTypeId of the last task we sent to Artisan. Used to detect class switches
+    /// between consecutive crafts (e.g., BSM→CRP→BSM). When a class change is detected,
+    /// we reset Artisan before sending the next CraftItem to prevent silent failures.
+    /// -1 = no previous craft (first task in the queue).
+    /// </summary>
+    private int lastCraftTypeId = -1;
+
     public CraftingOrchestratorState State { get; private set; } = CraftingOrchestratorState.Idle;
     public IReadOnlyList<CraftingTask> Tasks => taskQueue;
     public CraftingTask? CurrentTask => currentTaskIndex >= 0 && currentTaskIndex < taskQueue.Count
@@ -90,6 +98,7 @@ public sealed class CraftingOrchestrator
         currentTaskIndex = -1;
         delayUntil = null;
         pendingRetry = false;
+        lastCraftTypeId = -1;
 
         foreach (var step in resolved.CraftOrder)
         {
@@ -105,6 +114,7 @@ public sealed class CraftingOrchestrator
 
     /// <summary>
     /// Begins executing the crafting queue.
+    /// Checks if Artisan is idle before dispatching the first command.
     /// </summary>
     public void Start()
     {
@@ -119,7 +129,21 @@ public sealed class CraftingOrchestrator
 
         State = CraftingOrchestratorState.Running;
         currentTaskIndex = 0;
-        StartCurrentTask();
+
+        // Gate: if Artisan is still busy from a previous workflow or manual craft,
+        // wait for it to become idle before dispatching the first CraftItem.
+        if (ipc.Artisan.GetIsBusy())
+        {
+            DalamudApi.Log.Information(
+                "Artisan is still busy at craft queue start. Waiting for idle before dispatching first task.");
+            waitingForArtisanIdle = true;
+            artisanIdleWaitStart = DateTime.Now;
+            pendingStartNext = true;
+        }
+        else
+        {
+            StartCurrentTask();
+        }
     }
 
     /// <summary>
@@ -138,6 +162,7 @@ public sealed class CraftingOrchestrator
         waitingForArtisanIdle = false;
         delayUntil = null;
         pendingRetry = false;
+        lastCraftTypeId = -1;
         StatusMessage = "Crafting stopped.";
     }
 
@@ -403,9 +428,55 @@ public sealed class CraftingOrchestrator
 
     /// <summary>
     /// Sends the CraftItem command to Artisan and records the inventory baseline.
+    /// If Artisan is still busy, defers to the idle-wait gate instead of sending immediately.
+    ///
+    /// When the craft class changes between tasks (e.g., BSM→CRP→BSM), Artisan's CraftItem
+    /// IPC can silently fail — it never reports busy and the craft never starts. To work around
+    /// this, we do a stop→restart cycle on Artisan whenever a class switch is detected.
     /// </summary>
     private void SendCraftCommand(CraftingTask task, int quantity)
     {
+        // Defensive gate: if Artisan is still busy, defer dispatch to the idle-wait loop
+        // instead of sending a command that will be silently dropped.
+        var artisanBusy = ipc.Artisan.GetIsBusy();
+        var artisanEndurance = ipc.Artisan.GetEnduranceStatus();
+        var artisanStopReq = ipc.Artisan.GetStopRequest();
+
+        if (artisanBusy)
+        {
+            DalamudApi.Log.Warning(
+                $"Artisan is STILL BUSY when about to send CraftItem for {task.ItemName}. " +
+                "Deferring to idle-wait gate instead of sending command that would be dropped.");
+            waitingForArtisanIdle = true;
+            artisanIdleWaitStart = DateTime.Now;
+
+            // Determine whether this is a retry or a new task dispatch
+            if (task.RetryCount > 0 && task.Status == CraftingTaskStatus.InProgress)
+                pendingRetry = true;
+            else
+                pendingStartNext = true;
+            return;
+        }
+
+        DalamudApi.Log.Information(
+            $"Artisan state before CraftItem: busy={artisanBusy}, endurance={artisanEndurance}, " +
+            $"stopRequest={artisanStopReq}");
+
+        // --- Class-switch workaround ---
+        // Artisan's CraftItem IPC sometimes silently fails when it needs to switch crafting
+        // classes internally (e.g. BSM→CRP→BSM). The CraftItem call returns, but Artisan never
+        // opens the recipe or reports busy. A stop→restart cycle before the command fixes this.
+        if (lastCraftTypeId >= 0 && task.CraftTypeId != lastCraftTypeId)
+        {
+            var prevClassName = RecipeResolver.RecipeResolverService.GetCraftTypeName(lastCraftTypeId);
+            var newClassName = RecipeResolver.RecipeResolverService.GetCraftTypeName(task.CraftTypeId);
+            DalamudApi.Log.Information(
+                $"[Craft:ClassSwitch] Class change detected: {prevClassName} → {newClassName}. " +
+                "Resetting Artisan (stop→restart) to prevent silent CraftItem failure.");
+            ipc.Artisan.SetStopRequest(true);
+            ipc.Artisan.SetStopRequest(false);
+        }
+
         // Record inventory count before crafting so we can verify the delta
         if (cachedInventoryManager != null)
             inventoryCountBeforeCraft = cachedInventoryManager.GetItemCount(task.ItemId);
@@ -414,20 +485,6 @@ public sealed class CraftingOrchestrator
 
         // Reset busy tracking — must see Artisan report busy before treating not-busy as completion
         artisanEverReportedBusy = false;
-
-        // Log Artisan state before sending command for diagnostics
-        var artisanBusy = ipc.Artisan.GetIsBusy();
-        var artisanEndurance = ipc.Artisan.GetEnduranceStatus();
-        var artisanStopReq = ipc.Artisan.GetStopRequest();
-        if (artisanBusy)
-        {
-            DalamudApi.Log.Warning(
-                $"Artisan is STILL BUSY when sending CraftItem for {task.ItemName}! " +
-                "Command may be silently dropped. This should not happen — the idle-wait gate should have prevented this.");
-        }
-        DalamudApi.Log.Information(
-            $"Artisan state before CraftItem: busy={artisanBusy}, endurance={artisanEndurance}, " +
-            $"stopRequest={artisanStopReq}");
 
         // Clear any lingering stop request from a previous task or workflow —
         // Artisan may silently ignore CraftItem if a stop was previously requested.
@@ -440,6 +497,7 @@ public sealed class CraftingOrchestrator
         ipc.Artisan.CraftItem((ushort)task.RecipeId, quantity);
         craftItemSentTime = DateTime.Now;
         waitingForArtisanToFinish = true;
+        lastCraftTypeId = task.CraftTypeId;
 
         DalamudApi.Log.Information(
             $"Sent CraftItem to Artisan: {task.ItemName} x{quantity} (recipeId={task.RecipeId}) " +

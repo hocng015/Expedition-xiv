@@ -9,6 +9,7 @@ using Expedition.Gathering;
 using Expedition.Insights;
 using Expedition.Inventory;
 using Expedition.IPC;
+using Expedition.PlayerState;
 using Expedition.RecipeResolver;
 using Expedition.UI;
 using Expedition.Workflow;
@@ -48,6 +49,10 @@ public sealed class Expedition : IDalamudPlugin
         DalamudApi.Initialize(pluginInterface);
 
         Config = DalamudApi.PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+
+        // Initialize ExpArrayIndex cache for correct PlayerState.ClassJobLevels indexing.
+        // Must happen early, before any code reads player levels.
+        JobSwitchManager.InitializeExpArrayIndices();
 
         // Initialize activation key validation
         ActivationService.Initialize(Config);

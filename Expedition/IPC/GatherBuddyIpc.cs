@@ -22,6 +22,16 @@ public sealed class GatherBuddyIpc : IDisposable
 
     public bool IsAvailable { get; private set; }
 
+    /// <summary>
+    /// The GBR status text captured at the moment AutoGather was last disabled.
+    /// Read immediately in the OnEnabledChanged callback so it reflects GBR's
+    /// AbortAutoGather reason before GBR has a chance to clear it.
+    /// </summary>
+    public string LastDisableStatusText { get; private set; } = string.Empty;
+
+    /// <summary>When AutoGather was last disabled (by any source).</summary>
+    public DateTime LastDisableTime { get; private set; } = DateTime.MinValue;
+
     public event Action? OnAutoGatherWaiting;
     public event Action<bool>? OnAutoGatherEnabledChanged;
 
@@ -116,6 +126,15 @@ public sealed class GatherBuddyIpc : IDisposable
 
     private void OnEnabledChanged(bool enabled)
     {
+        if (!enabled)
+        {
+            // Capture the status text NOW — GBR sets AutoStatus in AbortAutoGather()
+            // and may clear it before our next 1s poll. This is the only reliable
+            // moment to read the disable reason.
+            LastDisableStatusText = GetStatusText();
+            LastDisableTime = DateTime.Now;
+        }
+
         OnAutoGatherEnabledChanged?.Invoke(enabled);
     }
 }

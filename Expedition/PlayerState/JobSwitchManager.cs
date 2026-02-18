@@ -1,3 +1,5 @@
+using Lumina.Excel.Sheets;
+
 namespace Expedition.PlayerState;
 
 /// <summary>
@@ -16,7 +18,7 @@ namespace Expedition.PlayerState;
 /// </summary>
 public sealed class JobSwitchManager
 {
-    // ClassJob IDs for relevant jobs
+    // ClassJob RowIds for relevant jobs
     public const uint CRP = 8;
     public const uint BSM = 9;
     public const uint ARM = 10;
@@ -28,6 +30,81 @@ public sealed class JobSwitchManager
     public const uint MIN = 16;
     public const uint BTN = 17;
     public const uint FSH = 18;
+
+    // --- ExpArrayIndex lookup ---
+    // PlayerState.ClassJobLevels is indexed by ExpArrayIndex (from the ClassJob Lumina sheet),
+    // NOT by ClassJob RowId. We cache these at init time for fast lookups.
+    private static readonly Dictionary<uint, int> ExpArrayIndexCache = new();
+    private static bool expArrayIndexInitialized;
+
+    /// <summary>
+    /// Initializes the ExpArrayIndex cache from the Lumina ClassJob sheet.
+    /// Must be called once after DalamudApi is ready.
+    /// </summary>
+    public static void InitializeExpArrayIndices()
+    {
+        if (expArrayIndexInitialized) return;
+
+        try
+        {
+            var classJobSheet = DalamudApi.DataManager.GetExcelSheet<ClassJob>();
+            if (classJobSheet == null)
+            {
+                DalamudApi.Log.Warning("[JobSwitch] ClassJob sheet unavailable — level lookups will be incorrect.");
+                return;
+            }
+
+            for (uint jobId = CRP; jobId <= FSH; jobId++)
+            {
+                var row = classJobSheet.GetRow(jobId);
+                var expIdx = (int)row.ExpArrayIndex;
+                ExpArrayIndexCache[jobId] = expIdx;
+                DalamudApi.Log.Debug($"[JobSwitch] ClassJob {jobId} → ExpArrayIndex {expIdx}");
+            }
+
+            expArrayIndexInitialized = true;
+            DalamudApi.Log.Information(
+                $"[JobSwitch] ExpArrayIndex cache initialized: " +
+                $"MIN={GetExpArrayIndex(MIN)}, BTN={GetExpArrayIndex(BTN)}, FSH={GetExpArrayIndex(FSH)}");
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Warning($"[JobSwitch] Failed to init ExpArrayIndex cache: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Gets the ExpArrayIndex for a ClassJob RowId.
+    /// This is needed because PlayerState.ClassJobLevels is indexed by ExpArrayIndex, not RowId.
+    /// Returns -1 if the index is not cached.
+    /// </summary>
+    public static int GetExpArrayIndex(uint classJobRowId)
+    {
+        if (ExpArrayIndexCache.TryGetValue(classJobRowId, out var idx))
+            return idx;
+        return -1;
+    }
+
+    /// <summary>
+    /// Reads a single ClassJob level from PlayerState using the correct ExpArrayIndex.
+    /// Returns -1 if the level cannot be read.
+    /// </summary>
+    public static unsafe int GetPlayerJobLevel(uint classJobRowId)
+    {
+        var expIdx = GetExpArrayIndex(classJobRowId);
+        if (expIdx < 0) return -1;
+
+        try
+        {
+            var playerState = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
+            if (playerState == null) return -1;
+            return playerState->ClassJobLevels[expIdx];
+        }
+        catch
+        {
+            return -1;
+        }
+    }
 
     private static readonly Dictionary<int, uint> CraftTypeToClassJob = new()
     {
@@ -106,7 +183,11 @@ public sealed class JobSwitchManager
 
     /// <summary>
     /// Reads actual player class/job levels from the game's PlayerState struct.
-    /// Returns a dictionary of ClassJob ID -> level.
+    /// Returns a dictionary of ClassJob RowId -> level.
+    ///
+    /// IMPORTANT: PlayerState.ClassJobLevels is indexed by ExpArrayIndex (from the
+    /// ClassJob Lumina sheet), NOT by ClassJob RowId. We use the cached ExpArrayIndex
+    /// lookup to translate RowId → array index.
     /// </summary>
     private static unsafe Dictionary<uint, int> GetPlayerClassLevels()
     {
@@ -117,11 +198,17 @@ public sealed class JobSwitchManager
             var playerState = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
             if (playerState == null) return levels;
 
-            // ClassJob IDs 8-18 map to DoH/DoL (CRP=8 through FSH=18)
-            // PlayerState.ClassJobLevels is indexed by ClassJob RowId
+            // ClassJob RowIds 8-18 map to DoH/DoL (CRP=8 through FSH=18)
+            // Must translate RowId → ExpArrayIndex before indexing ClassJobLevels
             for (uint jobId = CRP; jobId <= FSH; jobId++)
             {
-                var level = playerState->ClassJobLevels[(int)jobId];
+                var expIdx = GetExpArrayIndex(jobId);
+                if (expIdx < 0)
+                {
+                    DalamudApi.Log.Debug($"[JobSwitch] No ExpArrayIndex for ClassJob {jobId} — skipping.");
+                    continue;
+                }
+                var level = playerState->ClassJobLevels[expIdx];
                 levels[jobId] = level;
             }
         }

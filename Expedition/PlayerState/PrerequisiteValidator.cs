@@ -27,6 +27,7 @@ public sealed class PrerequisiteValidator
     {
         var result = new ValidationResult();
 
+        ValidateGatheringLevels(resolved, result);
         ValidateCrystalRequirements(resolved, result);
         ValidateExpertRecipes(resolved, result);
         ValidateSpecialistRequirements(resolved, result);
@@ -187,6 +188,85 @@ public sealed class PrerequisiteValidator
         }
     }
 
+    /// <summary>
+    /// Validates that the player's gathering class levels are sufficient to
+    /// access the nodes required by each gather item.
+    ///
+    /// GBR internally filters items by: node.Level &lt;= (playerLevel + 5) / 5 * 5.
+    /// If the player is too low-level, GBR silently drops the item from its
+    /// _gatherableItems list, causing ListExhausted and endless retries.
+    /// This check catches that situation before gathering even starts.
+    /// </summary>
+    private static void ValidateGatheringLevels(ResolvedRecipe resolved, ValidationResult result)
+    {
+        if (resolved.GatherList.Count == 0) return;
+
+        // Read actual player gathering levels from PlayerState using correct ExpArrayIndex
+        Dictionary<uint, int> playerLevels;
+        try
+        {
+            var minerLevel = JobSwitchManager.GetPlayerJobLevel(JobSwitchManager.MIN);
+            var botanistLevel = JobSwitchManager.GetPlayerJobLevel(JobSwitchManager.BTN);
+            var fisherLevel = JobSwitchManager.GetPlayerJobLevel(JobSwitchManager.FSH);
+
+            if (minerLevel < 0 && botanistLevel < 0 && fisherLevel < 0)
+                return; // Can't validate without player state
+
+            playerLevels = new Dictionary<uint, int>();
+            if (minerLevel >= 0) playerLevels[JobSwitchManager.MIN] = minerLevel;
+            if (botanistLevel >= 0) playerLevels[JobSwitchManager.BTN] = botanistLevel;
+            if (fisherLevel >= 0) playerLevels[JobSwitchManager.FSH] = fisherLevel;
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Debug($"[Validation:GatherLevel] Could not read player levels: {ex.Message}");
+            return;
+        }
+
+        foreach (var mat in resolved.GatherList)
+        {
+            if (mat.QuantityRemaining <= 0) continue;
+            if (mat.GatherNodeLevel <= 0) continue; // Level unknown — skip check
+
+            // Determine which gathering class is needed
+            var requiredJobId = mat.GatherType switch
+            {
+                RecipeResolver.GatherType.Miner => JobSwitchManager.MIN,
+                RecipeResolver.GatherType.Botanist => JobSwitchManager.BTN,
+                RecipeResolver.GatherType.Fisher => JobSwitchManager.FSH,
+                _ => 0u,
+            };
+
+            if (requiredJobId == 0 || !playerLevels.TryGetValue(requiredJobId, out var playerLevel))
+                continue;
+
+            // GBR's level filter: (playerLevel + 5) / 5 * 5
+            // This rounds up to the next multiple of 5 (e.g., 21 -> 25, 65 -> 70)
+            var gbrThreshold = (playerLevel + 5) / 5 * 5;
+
+            if (mat.GatherNodeLevel > gbrThreshold)
+            {
+                var className = mat.GatherType switch
+                {
+                    RecipeResolver.GatherType.Miner => "Miner",
+                    RecipeResolver.GatherType.Botanist => "Botanist",
+                    RecipeResolver.GatherType.Fisher => "Fisher",
+                    _ => "Gatherer",
+                };
+
+                result.Warnings.Add(new ValidationWarning
+                {
+                    Category = ValidationCategory.GatheringLevel,
+                    Message = $"{className} Lv{playerLevel} cannot gather {mat.ItemName} " +
+                              $"(requires Lv{mat.GatherNodeLevel} nodes, " +
+                              $"GBR threshold={gbrThreshold}). " +
+                              $"Level up {className} or obtain this material another way.",
+                    Severity = Severity.Error,
+                });
+            }
+        }
+    }
+
     private static bool IsCrystalItem(string name)
     {
         return name.Contains("Shard") || name.Contains("Crystal") || name.Contains("Cluster");
@@ -225,6 +305,7 @@ public enum ValidationCategory
     Collectables,
     GearDurability,
     Buffs,
+    GatheringLevel,
 }
 
 public enum Severity

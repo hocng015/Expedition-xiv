@@ -14,6 +14,13 @@ public sealed class GatheringTask
     public int QuantityGathered { get; set; }
     public bool IsCollectable { get; init; }
     public GatherType GatherType { get; init; }
+
+    /// <summary>
+    /// The gathering node level required for this item.
+    /// Used for pre-flight level validation against the player's gathering class levels.
+    /// </summary>
+    public int GatherNodeLevel { get; init; }
+
     public GatheringTaskStatus Status { get; set; } = GatheringTaskStatus.Pending;
     public int RetryCount { get; set; }
     public string? ErrorMessage { get; set; }
@@ -61,6 +68,7 @@ public sealed class GatheringTask
             QuantityNeeded = mat.QuantityNeeded,
             IsCollectable = mat.IsCollectable,
             GatherType = mat.GatherType,
+            GatherNodeLevel = mat.GatherNodeLevel,
             IsTimedNode = mat.IsTimedNode,
             IsAetherialReductionSource = mat.IsAetherialReductionSource,
             SpawnHours = mat.SpawnHours,

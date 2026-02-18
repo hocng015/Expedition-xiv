@@ -384,6 +384,7 @@ public sealed class RecipeResolverService
                         IsGatherable = true,
                         IsCollectable = ingredient.IsCollectable,
                         GatherType = ingredient.GatherType,
+                        GatherNodeLevel = ingredient.GatherNodeLevel,
                     };
                 }
             }
@@ -442,7 +443,7 @@ public sealed class RecipeResolverService
 
             var itemName = ingredientItemRow.Value.Name.ExtractText();
             var isCraftable = recipesByItemId.ContainsKey(ingredientItem.RowId);
-            var gatherType = GetGatherType(ingredientItem.RowId);
+            var (gatherType, gatherLevel) = GetGatherInfo(ingredientItem.RowId);
             var isGatherable = gatherType != GatherType.None;
 
             uint? subRecipeId = null;
@@ -470,6 +471,7 @@ public sealed class RecipeResolverService
                 IsCollectable = ingredientItemRow.Value.IsCollectable,
                 RecipeId = subRecipeId,
                 GatherType = gatherType,
+                GatherNodeLevel = gatherLevel,
                 IsCrystal = isCrystal,
                 IsAetherialReductionSource = isAethersand,
             });
@@ -499,11 +501,22 @@ public sealed class RecipeResolverService
         };
     }
 
-    private GatherType GetGatherType(uint itemId)
+    private (GatherType Type, int Level) GetGatherInfo(uint itemId)
     {
         if (gatherItemInfo.TryGetValue(itemId, out var info))
-            return info.Type;
-        return GatherType.None;
+            return info;
+        return (GatherType.None, 0);
+    }
+
+    /// <summary>
+    /// Returns the gathering node level for an item, or 0 if not gatherable.
+    /// Used by pre-flight validation to check player level requirements.
+    /// </summary>
+    public int GetGatherNodeLevel(uint itemId)
+    {
+        if (gatherItemInfo.TryGetValue(itemId, out var info))
+            return info.Level;
+        return 0;
     }
 
     private static bool IsCrystalItem(string name)
