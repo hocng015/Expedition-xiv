@@ -578,14 +578,14 @@ public static class InsightsTab
         ImGui.TextColored(Theme.TextMuted, "Item");
         if (showCategory)
         {
-            ImGui.SameLine(540);
+            ImGui.SameLine(480);
             ImGui.TextColored(Theme.TextMuted, "Category");
         }
-        ImGui.SameLine(showCategory ? 680 : 540);
+        ImGui.SameLine(showCategory ? 640 : 480);
         ImGui.TextColored(Theme.TextMuted, "Velocity");
-        ImGui.SameLine(showCategory ? 800 : 660);
+        ImGui.SameLine(showCategory ? 750 : 590);
         ImGui.TextColored(Theme.TextMuted, "Avg Price");
-        ImGui.SameLine(showCategory ? 920 : 780);
+        ImGui.SameLine(showCategory ? 860 : 700);
         ImGui.TextColored(Theme.TextMuted, "Daily Gil Vol");
         ImGui.Separator();
 
@@ -613,33 +613,34 @@ public static class InsightsTab
 
             // Clickable name for expansion
             if (ImGui.Selectable(string.Concat(nameText, "##item", i.ToString()),
-                isExpanded, ImGuiSelectableFlags.None, new Vector2(showCategory ? 450 : 460, 0)))
+                isExpanded, ImGuiSelectableFlags.None, new Vector2(showCategory ? 390 : 400, 0)))
             {
                 expandedItemIndex = isExpanded ? -1 : i;
             }
 
-            // Category badge
+            // Category badge — truncate long names to fit column
             if (showCategory && !string.IsNullOrEmpty(item.CategoryName))
             {
-                ImGui.SameLine(540);
+                ImGui.SameLine(480);
                 ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
-                ImGui.TextColored(Theme.TextSecondary, item.CategoryName);
+                var catText = TruncateCategory(item.CategoryName);
+                ImGui.TextColored(Theme.TextSecondary, catText);
             }
 
             // Velocity
-            var velX = showCategory ? 680f : 540f;
+            var velX = showCategory ? 640f : 480f;
             ImGui.SameLine(velX);
             ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             DrawBoxedValue(string.Concat(FormatNumber(item.RegularSaleVelocity), "/day"), Theme.Accent);
 
             // Average price
-            var priceX = showCategory ? 800f : 660f;
+            var priceX = showCategory ? 750f : 590f;
             ImGui.SameLine(priceX);
             ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             DrawBoxedValue(FormatGil(item.CurrentAveragePrice), Theme.Gold);
 
             // Daily gil volume
-            var gilX = showCategory ? 920f : 780f;
+            var gilX = showCategory ? 860f : 700f;
             ImGui.SameLine(gilX);
             ImGui.SetCursorPosY(cursorY + (IconRow.Y - ImGui.GetTextLineHeight()) / 2);
             DrawBoxedValue(FormatGil(item.EstimatedDailyGilVolume), Theme.Success);
@@ -658,6 +659,8 @@ public static class InsightsTab
 
                 Theme.KeyValue("Min Price: ", FormatGil(item.MinPrice), Theme.Success);
                 Theme.KeyValue("Max Price: ", FormatGil(item.MaxPrice), Theme.Error);
+                if (item.ListingAveragePrice > 0)
+                    Theme.KeyValue("Listing Avg: ", FormatGil(item.ListingAveragePrice), Theme.TextMuted);
                 Theme.KeyValue("Listings: ", item.ListingsCount.ToString(), Theme.TextPrimary);
                 Theme.KeyValue("Units For Sale: ", FormatNumber(item.UnitsForSale), Theme.TextPrimary);
                 Theme.KeyValue("Units Sold (recent): ", FormatNumber(item.UnitsSold), Theme.Accent);
@@ -1213,5 +1216,19 @@ public static class InsightsTab
         if (value >= 1_000)
             return string.Concat((value / 1_000f).ToString("F1"), "K");
         return ((int)value).ToString("N0");
+    }
+
+    /// <summary>
+    /// Abbreviates long category names so they fit the column without bleeding.
+    /// </summary>
+    private static string TruncateCategory(string name)
+    {
+        return name switch
+        {
+            "Mounts & Bardings" => "Mounts",
+            "Orchestrion Rolls" => "Orchestrion",
+            "Crafting Mats" => "Crafting",
+            _ => name.Length > 14 ? string.Concat(name.AsSpan(0, 12), "..") : name,
+        };
     }
 }

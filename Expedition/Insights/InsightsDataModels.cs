@@ -10,12 +10,17 @@ public sealed class MarketItemData
     public string ItemName { get; set; } = string.Empty;
     public uint IconId { get; set; }
 
-    // Price stats
+    // Price stats — based on actual SALE history (immune to troll listings)
     public float CurrentAveragePrice { get; init; }
     public float CurrentAveragePriceNQ { get; init; }
     public float CurrentAveragePriceHQ { get; init; }
     public float MinPrice { get; init; }
     public float MaxPrice { get; init; }
+
+    // Listing average — the mean of current MB listings. Kept for reference
+    // but NOT used for display or ranking because troll listings at 999M
+    // inflate it wildly (e.g. a 1.5K-gil meal shows as 23M).
+    public float ListingAveragePrice { get; init; }
 
     // Velocity (units sold per day) — the key ranking metric
     public float RegularSaleVelocity { get; init; }

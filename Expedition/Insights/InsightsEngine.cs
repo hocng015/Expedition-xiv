@@ -331,9 +331,12 @@ public sealed class InsightsEngine : IDisposable
             RegularSaleVelocity = GetFloat(el, "vel"),
             NqSaleVelocity = GetFloat(el, "nqVel"),
             HqSaleVelocity = GetFloat(el, "hqVel"),
+            // avgPrice now contains the sale-history average (not the listing average)
             CurrentAveragePrice = GetFloat(el, "avgPrice"),
             CurrentAveragePriceNQ = GetFloat(el, "avgPriceNQ"),
             CurrentAveragePriceHQ = GetFloat(el, "avgPriceHQ"),
+            // listingAvg is the mean of current MB listings (often inflated by troll prices)
+            ListingAveragePrice = GetFloat(el, "listingAvg"),
             MinPrice = GetFloat(el, "minPrice"),
             MaxPrice = GetFloat(el, "maxPrice"),
             UnitsForSale = GetInt(el, "supply"),
