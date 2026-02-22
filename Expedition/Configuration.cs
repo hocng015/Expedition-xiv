@@ -77,6 +77,14 @@ public sealed class Configuration : IPluginConfiguration
     public string InsightsDefaultDataCenter { get; set; } = "Aether";
     public bool InsightsAutoRefresh { get; set; } = true;
 
+    // --- Diadem ---
+    public bool DiademAutoStartSession { get; set; } = true;
+    public bool DiademShowXpNotifications { get; set; } = true;
+    public bool DiademUseWindmires { get; set; } = true;
+    public bool DiademAutoApplySkillPreset { get; set; } = true;
+    public bool DiademEnableAetherCannon { get; set; } = true;
+    public bool DiademEnableCordials { get; set; } = true;
+
     // --- Activation ---
     public string ActivationKey { get; set; } = string.Empty;
 

@@ -106,6 +106,49 @@ public sealed class JobSwitchManager
         }
     }
 
+    /// <summary>
+    /// Reads a single ClassJob's current XP (within the level) from PlayerState.
+    /// Uses the same ExpArrayIndex mapping as GetPlayerJobLevel.
+    /// Returns -1 if the XP cannot be read.
+    /// </summary>
+    public static unsafe int GetPlayerJobExperience(uint classJobRowId)
+    {
+        var expIdx = GetExpArrayIndex(classJobRowId);
+        if (expIdx < 0) return -1;
+
+        try
+        {
+            var playerState = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
+            if (playerState == null) return -1;
+            return playerState->ClassJobExperience[expIdx];
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Returns the total XP required to advance from the given level to the next level.
+    /// Uses the ParamGrow Lumina sheet. Returns 0 if the level is max or data unavailable.
+    /// </summary>
+    public static int GetXpToNextLevel(int currentLevel)
+    {
+        if (currentLevel <= 0) return 0;
+
+        try
+        {
+            var sheet = DalamudApi.DataManager.GetExcelSheet<ParamGrow>();
+            if (sheet == null) return 0;
+            var row = sheet.GetRow((uint)currentLevel);
+            return (int)row.ExpToNext;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     private static readonly Dictionary<int, uint> CraftTypeToClassJob = new()
     {
         { 0, CRP }, { 1, BSM }, { 2, ARM }, { 3, GSM },

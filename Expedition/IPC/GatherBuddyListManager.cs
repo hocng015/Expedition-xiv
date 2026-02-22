@@ -428,6 +428,394 @@ public sealed class GatherBuddyListManager
     }
 
     /// <summary>
+    /// Enables GBR's Diadem Windmire Jumps config setting via reflection.
+    /// Path: GatherBuddy.Config.AutoGatherConfig.DiademWindmireJumps = true
+    /// This is OFF by default in GBR, so we enable it when starting Diadem auto-gather.
+    /// </summary>
+    public bool EnableDiademWindmires()
+    {
+        if (gbrPluginInstance == null)
+        {
+            DalamudApi.Log.Warning("[GBR] Cannot enable Windmires — no GBR plugin instance.");
+            return false;
+        }
+
+        try
+        {
+            var gbrType = gbrPluginInstance.GetType();
+            var gbrAssembly = gbrType.Assembly;
+
+            // Find the GatherBuddy class (static Config property lives here)
+            var gatherBuddyClass = gbrAssembly.GetTypes()
+                .FirstOrDefault(t => t.Name == "GatherBuddy" && !t.IsInterface);
+
+            // Get Config: GatherBuddy.Config (static property)
+            object? config = null;
+            if (gatherBuddyClass != null)
+            {
+                config = FindMember(gatherBuddyClass, null, "Config");
+            }
+            config ??= FindMember(gbrType, gbrPluginInstance, "Config");
+
+            if (config == null)
+            {
+                DalamudApi.Log.Warning("[GBR] Could not find GatherBuddy.Config for Windmire toggle.");
+                return false;
+            }
+
+            // Get AutoGatherConfig from Config
+            var autoGatherConfig = FindMember(config.GetType(), config, "AutoGatherConfig");
+            if (autoGatherConfig == null)
+            {
+                DalamudApi.Log.Warning("[GBR] Could not find AutoGatherConfig on GBR Config.");
+                return false;
+            }
+
+            // Set DiademWindmireJumps = true
+            var agcType = autoGatherConfig.GetType();
+            var windmireProp = agcType.GetProperty("DiademWindmireJumps",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+            if (windmireProp != null && windmireProp.CanWrite)
+            {
+                var currentValue = windmireProp.GetValue(autoGatherConfig) as bool?;
+                if (currentValue != true)
+                {
+                    windmireProp.SetValue(autoGatherConfig, true);
+                    DalamudApi.Log.Information("[GBR] Enabled DiademWindmireJumps in GBR config.");
+                }
+                else
+                {
+                    DalamudApi.Log.Debug("[GBR] DiademWindmireJumps already enabled.");
+                }
+                return true;
+            }
+
+            // Try as a field instead
+            var windmireField = agcType.GetField("DiademWindmireJumps",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (windmireField != null)
+            {
+                windmireField.SetValue(autoGatherConfig, true);
+                DalamudApi.Log.Information("[GBR] Enabled DiademWindmireJumps (field) in GBR config.");
+                return true;
+            }
+
+            DalamudApi.Log.Warning("[GBR] Could not find DiademWindmireJumps property/field on AutoGatherConfig.");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Error(ex, "[GBR] Failed to enable DiademWindmireJumps.");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Applies Diadem-optimized gathering skill settings to GBR via reflection.
+    /// Configures AutoGatherConfig global settings, then navigates to the Default
+    /// ConfigPreset via: pluginInstance.Interface._configPresetsSelector.Items[last]
+    /// and enables rotation solver, gathering skills, and consumables (cordials).
+    /// </summary>
+    public bool ApplyDiademSkillPreset(bool enableCordials = true, bool enableAetherCannon = true)
+    {
+        if (gbrPluginInstance == null)
+        {
+            DalamudApi.Log.Warning("[GBR:Skills] Cannot apply skill preset — no GBR plugin instance.");
+            return false;
+        }
+
+        try
+        {
+            var gbrType = gbrPluginInstance.GetType();
+            var gbrAssembly = gbrType.Assembly;
+
+            // ── Step 1: Get GatherBuddy.Config.AutoGatherConfig ──
+            var gatherBuddyClass = gbrAssembly.GetTypes()
+                .FirstOrDefault(t => t.Name == "GatherBuddy" && !t.IsInterface);
+
+            object? config = null;
+            if (gatherBuddyClass != null)
+                config = FindMember(gatherBuddyClass, null, "Config");
+            config ??= FindMember(gbrType, gbrPluginInstance, "Config");
+
+            if (config == null)
+            {
+                DalamudApi.Log.Warning("[GBR:Skills] Could not find GatherBuddy.Config.");
+                return false;
+            }
+
+            var autoGatherConfig = FindMember(config.GetType(), config, "AutoGatherConfig");
+            if (autoGatherConfig == null)
+            {
+                DalamudApi.Log.Warning("[GBR:Skills] Could not find AutoGatherConfig.");
+                return false;
+            }
+
+            // ── Step 2: Apply AutoGatherConfig global settings ──
+            var agcType = autoGatherConfig.GetType();
+            foreach (var (propName, value) in Diadem.DiademSkillConfig.AutoGatherConfigSettings)
+            {
+                // Skip AetherCannon if user disabled it
+                if (propName == "DiademAutoAetherCannon" && !enableAetherCannon)
+                    continue;
+
+                if (SetPropertyOrField(agcType, autoGatherConfig, propName, value))
+                    DalamudApi.Log.Debug($"[GBR:Skills] Set AutoGatherConfig.{propName} = {value}");
+                else
+                    DalamudApi.Log.Debug($"[GBR:Skills] Could not set AutoGatherConfig.{propName}");
+            }
+
+            // ── Step 3: Find the Default ConfigPreset ──
+            // Path: pluginInstance.Interface._configPresetsSelector.Items[last]
+            // The Default preset is always the LAST item in the list.
+            var preset = FindDefaultConfigPreset(gbrPluginInstance, gbrType);
+
+            if (preset == null)
+            {
+                DalamudApi.Log.Warning("[GBR:Skills] Could not find Default ConfigPreset. " +
+                    "AutoGatherConfig settings were applied but skill rotation was not configured.");
+                return true; // partial success — global settings still applied
+            }
+
+            var presetType = preset.GetType();
+            DalamudApi.Log.Information($"[GBR:Skills] Found ConfigPreset: {presetType.Name}");
+
+            // ── Step 4: Apply ConfigPreset top-level settings ──
+            // ChooseBestActionsAutomatically and UseGivingLandOnCooldown are { get; set; }
+            foreach (var (propName, value) in Diadem.DiademSkillConfig.PresetSettings)
+            {
+                if (SetPropertyOrField(presetType, preset, propName, value))
+                    DalamudApi.Log.Information($"[GBR:Skills] Set Preset.{propName} = {value}");
+                else
+                    DalamudApi.Log.Warning($"[GBR:Skills] Could not set Preset.{propName}");
+            }
+
+            // ── Step 5: Configure gathering skills via GatherableActions ──
+            // GatherableActions is { get; init; } — we READ it to get the record, then SET
+            // mutable Enabled property on each sub-action (ActionConfig.Enabled is { get; set; })
+            var gatherableActions = ReadProperty(presetType, preset, "GatherableActions");
+            if (gatherableActions != null)
+            {
+                var actionsType = gatherableActions.GetType();
+                foreach (var (actionName, childProp, value) in Diadem.DiademSkillConfig.GatheringSkillSettings)
+                {
+                    // Each action (Bountiful, Yield2, etc.) is { get; init; } — read it
+                    var action = ReadProperty(actionsType, gatherableActions, actionName);
+                    if (action != null)
+                    {
+                        // ActionConfig.Enabled is { get; set; } — write it
+                        if (SetPropertyOrField(action.GetType(), action, childProp, value))
+                            DalamudApi.Log.Information($"[GBR:Skills] Set GatherableActions.{actionName}.{childProp} = {value}");
+                        else
+                            DalamudApi.Log.Warning($"[GBR:Skills] Could not set {actionName}.{childProp}");
+                    }
+                    else
+                    {
+                        DalamudApi.Log.Warning($"[GBR:Skills] GatherableActions.{actionName} not found.");
+                    }
+                }
+            }
+            else
+            {
+                DalamudApi.Log.Warning("[GBR:Skills] GatherableActions not found on preset.");
+                LogTypeStructure(presetType, "ConfigPreset (for GatherableActions)");
+            }
+
+            // ── Step 6: Configure consumables (cordials) ──
+            if (enableCordials)
+            {
+                // Consumables is { get; init; } — read it
+                var consumables = ReadProperty(presetType, preset, "Consumables");
+                if (consumables != null)
+                {
+                    var consumablesType = consumables.GetType();
+                    foreach (var (consumableName, childProp, value) in Diadem.DiademSkillConfig.ConsumableSettings)
+                    {
+                        // Cordial is { get; init; } — read it
+                        var consumable = ReadProperty(consumablesType, consumables, consumableName);
+                        if (consumable != null)
+                        {
+                            // ActionConfigConsumable.Enabled is { get; set; } — write it
+                            if (SetPropertyOrField(consumable.GetType(), consumable, childProp, value))
+                                DalamudApi.Log.Information($"[GBR:Skills] Set Consumables.{consumableName}.{childProp} = {value}");
+                            else
+                                DalamudApi.Log.Warning($"[GBR:Skills] Could not set {consumableName}.{childProp}");
+                        }
+                        else
+                        {
+                            DalamudApi.Log.Warning($"[GBR:Skills] Consumables.{consumableName} not found.");
+                        }
+                    }
+                }
+                else
+                {
+                    DalamudApi.Log.Warning("[GBR:Skills] Consumables not found on preset.");
+                }
+            }
+
+            DalamudApi.Log.Information("[GBR:Skills] Applied Diadem skill preset successfully.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Error(ex, "[GBR:Skills] Failed to apply Diadem skill preset.");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Navigates GBR's internal structure to find the Default ConfigPreset.
+    /// Path: pluginInstance → Interface (field) → _configPresetsSelector (field)
+    ///       → Items (IList, inherited from ItemSelector) → last element (Default preset).
+    /// </summary>
+    private object? FindDefaultConfigPreset(object pluginInstance, Type pluginType)
+    {
+        // Step A: Get the Interface field from the plugin instance
+        var iface = FindMember(pluginType, pluginInstance, "Interface", "_interface");
+        if (iface == null)
+        {
+            // Try broader search by type name
+            iface = FindMemberByTypeName(pluginType, pluginInstance, "Interface");
+        }
+        if (iface == null)
+        {
+            DalamudApi.Log.Warning("[GBR:Skills] Could not find Interface on GBR plugin instance.");
+            LogTypeStructure(pluginType, "GBR plugin (for Interface)");
+            return null;
+        }
+        DalamudApi.Log.Debug($"[GBR:Skills] Found Interface: {iface.GetType().Name}");
+
+        // Step B: Get _configPresetsSelector from Interface
+        var selector = FindMember(iface.GetType(), iface,
+            "_configPresetsSelector", "ConfigPresetsSelector", "configPresetsSelector");
+        selector ??= FindMemberByTypeName(iface.GetType(), iface, "ConfigPresetsSelector");
+        selector ??= FindMemberByTypeName(iface.GetType(), iface, "PresetsSelector");
+        if (selector == null)
+        {
+            DalamudApi.Log.Warning("[GBR:Skills] Could not find ConfigPresetsSelector on Interface.");
+            LogTypeStructure(iface.GetType(), "Interface (for ConfigPresetsSelector)");
+            return null;
+        }
+        DalamudApi.Log.Debug($"[GBR:Skills] Found ConfigPresetsSelector: {selector.GetType().Name}");
+
+        // Step C: Get Items from the selector (inherited from ItemSelector<ConfigPreset>)
+        // Also try via the public property GatherActionsPresets on Interface
+        System.Collections.IList? items = null;
+
+        // Try Items on selector first
+        var itemsObj = ReadProperty(selector.GetType(), selector, "Items");
+        if (itemsObj is System.Collections.IList itemsList)
+            items = itemsList;
+
+        // Fallback: try GatherActionsPresets on Interface (IReadOnlyCollection<ConfigPreset>)
+        if (items == null)
+        {
+            var presetsObj = ReadProperty(iface.GetType(), iface,
+                "GatherActionsPresets");
+            if (presetsObj is System.Collections.IEnumerable presetsEnum)
+            {
+                // Convert to list to get last element
+                var tempList = new List<object>();
+                foreach (var p in presetsEnum)
+                    tempList.Add(p);
+                if (tempList.Count > 0)
+                {
+                    var defaultPreset = tempList[^1]; // last = Default
+                    DalamudApi.Log.Information(
+                        $"[GBR:Skills] Found Default preset via GatherActionsPresets ({tempList.Count} presets total).");
+                    return defaultPreset;
+                }
+            }
+        }
+
+        if (items == null || items.Count == 0)
+        {
+            DalamudApi.Log.Warning("[GBR:Skills] ConfigPresetsSelector.Items is empty or not found.");
+            LogTypeStructure(selector.GetType(), "ConfigPresetsSelector (for Items)");
+            return null;
+        }
+
+        // The Default preset is always the last item in the list
+        var preset = items[items.Count - 1];
+        DalamudApi.Log.Information(
+            $"[GBR:Skills] Found Default preset via Items[{items.Count - 1}] ({items.Count} presets total).");
+        return preset;
+    }
+
+    /// <summary>
+    /// Sets a property or field value on an object by name. Returns true if set successfully.
+    /// </summary>
+    private static bool SetPropertyOrField(Type type, object instance, string name, object value)
+    {
+        var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+
+        var currentType = type;
+        while (currentType != null)
+        {
+            var prop = currentType.GetProperty(name, flags);
+            if (prop is { CanWrite: true })
+            {
+                prop.SetValue(instance, value);
+                return true;
+            }
+
+            var field = currentType.GetField(name, flags);
+            if (field != null && !field.IsInitOnly)
+            {
+                field.SetValue(instance, value);
+                return true;
+            }
+
+            currentType = currentType.BaseType;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Reads a property value by name (including init-only properties on records).
+    /// Unlike FindMember, this only reads — it doesn't try fields or multiple name variants.
+    /// Used for navigating init-only record properties like GatherableActions and Consumables.
+    /// </summary>
+    private static object? ReadProperty(Type type, object instance, params string[] names)
+    {
+        var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+
+        foreach (var name in names)
+        {
+            var currentType = type;
+            while (currentType != null)
+            {
+                var prop = currentType.GetProperty(name, flags);
+                if (prop is { CanRead: true })
+                {
+                    try
+                    {
+                        return prop.GetValue(instance);
+                    }
+                    catch { /* getter may throw */ }
+                }
+
+                // Also try fields (backing fields for init-only props)
+                var field = currentType.GetField(name, flags);
+                if (field != null)
+                {
+                    try
+                    {
+                        return field.GetValue(instance);
+                    }
+                    catch { /* may throw */ }
+                }
+
+                currentType = currentType.BaseType;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Looks up an IGatherable by item ID from GBR's GameData.
     /// Tries Gatherables first, then Fishes.
     /// </summary>

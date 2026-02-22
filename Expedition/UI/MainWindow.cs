@@ -148,6 +148,12 @@ public sealed class MainWindow
                 ImGui.EndTabItem();
             }
 
+            if (ImGui.BeginTabItem("Diadem"))
+            {
+                DiademTab.Draw(plugin);
+                ImGui.EndTabItem();
+            }
+
             if (ImGui.BeginTabItem("Insights"))
             {
                 InsightsTab.Draw(plugin.InsightsEngine);

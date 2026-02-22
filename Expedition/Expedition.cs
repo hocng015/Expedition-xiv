@@ -5,6 +5,7 @@ using Dalamud.Bindings.ImGui;
 
 using Expedition.Activation;
 using Expedition.Crafting;
+using Expedition.Diadem;
 using Expedition.Gathering;
 using Expedition.Insights;
 using Expedition.Inventory;
@@ -36,6 +37,8 @@ public sealed class Expedition : IDalamudPlugin
     public CraftingOrchestrator CraftingOrchestrator { get; }
     public WorkflowEngine WorkflowEngine { get; }
     public InsightsEngine InsightsEngine { get; }
+    public DiademSession DiademSession { get; } = new();
+    public DiademNavigator DiademNavigator { get; private set; } = null!;
 
     private readonly MainWindow mainWindow;
     private readonly OverlayWindow overlayWindow;
@@ -54,10 +57,14 @@ public sealed class Expedition : IDalamudPlugin
         // Must happen early, before any code reads player levels.
         JobSwitchManager.InitializeExpArrayIndices();
 
+        // Initialize Diadem item database (validates against Lumina)
+        DiademItemDatabase.Initialize();
+
         // Initialize activation key validation
         ActivationService.Initialize(Config);
 
         Ipc = new IpcManager();
+        DiademNavigator = new DiademNavigator(Ipc.Vnavmesh);
         RecipeResolver = new RecipeResolverService();
         InventoryManager = new InventoryManager();
         GatheringOrchestrator = new GatheringOrchestrator(Ipc);
@@ -261,6 +268,7 @@ public sealed class Expedition : IDalamudPlugin
         if (!ActivationService.IsActivated) return;
 
         WorkflowEngine.Update();
+        DiademNavigator.Update();
 
         if (Config.InsightsAutoRefresh)
             InsightsEngine.Update();
