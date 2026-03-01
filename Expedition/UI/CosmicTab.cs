@@ -51,6 +51,7 @@ public static class CosmicTab
     // Relic mode settings
     private static bool turninRelic;
     private static bool farmAllRelics;
+    private static bool relicCraftersFirst = true;
     private static bool stopOnceRelicFinished;
     private static bool relicSwapJob;
     private static int relicBattleJob;
@@ -83,6 +84,7 @@ public static class CosmicTab
         onlyGrabMission = config.CosmicOnlyGrabMission;
         turninRelic = config.CosmicTurninRelic;
         farmAllRelics = config.CosmicFarmAllRelics;
+        relicCraftersFirst = config.CosmicRelicCraftersFirst;
         stopOnceRelicFinished = config.CosmicStopOnceRelicFinished;
         relicSwapJob = config.CosmicRelicSwapJob;
         relicBattleJob = (int)config.CosmicRelicBattleJob;
@@ -107,6 +109,7 @@ public static class CosmicTab
         config.CosmicOnlyGrabMission = onlyGrabMission;
         config.CosmicTurninRelic = turninRelic;
         config.CosmicFarmAllRelics = farmAllRelics;
+        config.CosmicRelicCraftersFirst = relicCraftersFirst;
         config.CosmicStopOnceRelicFinished = stopOnceRelicFinished;
         config.CosmicRelicSwapJob = relicSwapJob;
         config.CosmicRelicBattleJob = (uint)relicBattleJob;
@@ -494,6 +497,19 @@ public static class CosmicTab
                     ImGui.TextColored(Theme.TextMuted, "Finishes one job's tier first to unlock the XP buff for others");
                     ImGui.Unindent(Theme.PadLarge);
                 }
+
+                ImGui.Spacing();
+
+                // Crafters first option (independent of auto rotation)
+                if (ImGui.Checkbox("Crafters First (DoH before DoL)##craftersFirst", ref relicCraftersFirst))
+                    SaveConfig(Expedition.Config);
+                ImGui.SameLine(0, Theme.Pad);
+                ImGui.TextColored(Theme.TextMuted, "Do all 8 crafters before 3 gatherers per tier");
+                Theme.HelpMarker(
+                    "Prioritizes all Disciples of the Hand (CRP, BSM, ARM, GSM, LTW, WVR, ALC, CUL)\n" +
+                    "before Disciples of the Land (MIN, BTN, FSH) within each tier.\n\n" +
+                    "Crafters are generally faster and unlock quality bonuses earlier,\n" +
+                    "often reducing total grinding time by 30-50% on later tools.");
 
                 ImGui.Spacing();
                 ImGui.Separator();
@@ -1079,6 +1095,7 @@ public static class CosmicTab
         // Relic mode settings
         ice.ChangeSetting("TurninRelic", turninRelic);
         ice.ChangeSetting("FarmAllRelics", farmAllRelics);
+        ice.ChangeSetting("RelicCraftersFirst", relicCraftersFirst);
         ice.ChangeSetting("Relic_SwapJob", relicSwapJob);
         ice.ChangeSetting("Relic_Stylist", relicStylist);
         if (relicSwapJob && relicBattleJob > 0)

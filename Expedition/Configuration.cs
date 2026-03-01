@@ -98,6 +98,7 @@ public sealed class Configuration : IPluginConfiguration
     public bool CosmicOnlyGrabMission { get; set; }
     public bool CosmicTurninRelic { get; set; }
     public bool CosmicFarmAllRelics { get; set; }
+    public bool CosmicRelicCraftersFirst { get; set; } = true;
     public bool CosmicStopOnceRelicFinished { get; set; }
     public bool CosmicRelicSwapJob { get; set; }
     public uint CosmicRelicBattleJob { get; set; }
