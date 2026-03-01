@@ -200,6 +200,26 @@ public sealed class GatherBuddyListManager
 
             var gatherablesDict = gatherablesProp!.GetValue(gameData);
             var fishesDict = fishesProp?.GetValue(gameData);
+
+            // Check if any items are fish and auto-enable FishDataCollection if needed
+            if (fishesDict != null && fishesTryGetValue != null)
+            {
+                var hasFish = false;
+                foreach (var (itemId, _) in items)
+                {
+                    var fishArgs = new object?[] { itemId, null };
+                    var found = fishesTryGetValue.Invoke(fishesDict, fishArgs);
+                    if (found is true && fishArgs[1] != null)
+                    {
+                        hasFish = true;
+                        break;
+                    }
+                }
+
+                if (hasFish)
+                    EnsureFishDataCollection();
+            }
+
             var addedCount = 0;
 
             foreach (var (itemId, quantity) in items)
@@ -512,6 +532,82 @@ public sealed class GatherBuddyListManager
     }
 
     /// <summary>
+    /// Ensures GBR's FishDataCollection config is enabled so AutoGather doesn't
+    /// abort when fish items are on the auto-gather list.
+    /// Path: GatherBuddy.Config.AutoGatherConfig.FishDataCollection = true
+    /// </summary>
+    private void EnsureFishDataCollection()
+    {
+        if (gbrPluginInstance == null)
+        {
+            DalamudApi.Log.Warning("[GBR] Cannot check FishDataCollection — no GBR plugin instance.");
+            return;
+        }
+
+        try
+        {
+            var gbrType = gbrPluginInstance.GetType();
+            var gbrAssembly = gbrType.Assembly;
+
+            var gatherBuddyClass = gbrAssembly.GetTypes()
+                .FirstOrDefault(t => t.Name == "GatherBuddy" && !t.IsInterface);
+
+            object? config = null;
+            if (gatherBuddyClass != null)
+                config = FindMember(gatherBuddyClass, null, "Config");
+            config ??= FindMember(gbrType, gbrPluginInstance, "Config");
+
+            if (config == null)
+            {
+                DalamudApi.Log.Warning("[GBR] Could not find GatherBuddy.Config for FishDataCollection toggle.");
+                return;
+            }
+
+            var autoGatherConfig = FindMember(config.GetType(), config, "AutoGatherConfig");
+            if (autoGatherConfig == null)
+            {
+                DalamudApi.Log.Warning("[GBR] Could not find AutoGatherConfig on GBR Config.");
+                return;
+            }
+
+            var agcType = autoGatherConfig.GetType();
+            var fishProp = agcType.GetProperty("FishDataCollection",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+            if (fishProp != null && fishProp.CanWrite)
+            {
+                var currentValue = fishProp.GetValue(autoGatherConfig) as bool?;
+                if (currentValue != true)
+                {
+                    fishProp.SetValue(autoGatherConfig, true);
+                    DalamudApi.Log.Information("[GBR] Auto-enabled FishDataCollection — fish items are on the gather list.");
+                }
+                else
+                {
+                    DalamudApi.Log.Debug("[GBR] FishDataCollection already enabled.");
+                }
+                return;
+            }
+
+            // Try as a field instead
+            var fishField = agcType.GetField("FishDataCollection",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (fishField != null)
+            {
+                fishField.SetValue(autoGatherConfig, true);
+                DalamudApi.Log.Information("[GBR] Auto-enabled FishDataCollection (field) — fish items are on the gather list.");
+                return;
+            }
+
+            DalamudApi.Log.Warning("[GBR] Could not find FishDataCollection property/field on AutoGatherConfig.");
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Error(ex, "[GBR] Failed to enable FishDataCollection.");
+        }
+    }
+
+    /// <summary>
     /// Applies Diadem-optimized gathering skill settings to GBR via reflection.
     /// Configures AutoGatherConfig global settings, then navigates to the Default
     /// ConfigPreset via: pluginInstance.Interface._configPresetsSelector.Items[last]
@@ -660,6 +756,148 @@ public sealed class GatherBuddyListManager
         catch (Exception ex)
         {
             DalamudApi.Log.Error(ex, "[GBR:Skills] Failed to apply Diadem skill preset.");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Applies optimized gathering skill settings to GBR for regular (non-Diadem) gathering.
+    /// Configures AutoGatherConfig global settings, then navigates to the Default
+    /// ConfigPreset and enables rotation solver, gathering skills, and consumables (cordials).
+    ///
+    /// This ensures GBR uses all available yield-boosting skills (Bountiful Yield,
+    /// King's Yield II, Solid Age, Gift of the Land, Tidings, etc.) and GP recovery
+    /// via cordials during Expedition's automated gathering workflows.
+    /// </summary>
+    public bool ApplyGatheringSkillPreset(bool enableCordials = true)
+    {
+        if (gbrPluginInstance == null)
+        {
+            DalamudApi.Log.Warning("[GBR:Skills] Cannot apply gathering skill preset — no GBR plugin instance.");
+            return false;
+        }
+
+        try
+        {
+            var gbrType = gbrPluginInstance.GetType();
+            var gbrAssembly = gbrType.Assembly;
+
+            // ── Step 1: Get GatherBuddy.Config.AutoGatherConfig ──
+            var gatherBuddyClass = gbrAssembly.GetTypes()
+                .FirstOrDefault(t => t.Name == "GatherBuddy" && !t.IsInterface);
+
+            object? config = null;
+            if (gatherBuddyClass != null)
+                config = FindMember(gatherBuddyClass, null, "Config");
+            config ??= FindMember(gbrType, gbrPluginInstance, "Config");
+
+            if (config == null)
+            {
+                DalamudApi.Log.Warning("[GBR:Skills] Could not find GatherBuddy.Config for gathering preset.");
+                return false;
+            }
+
+            var autoGatherConfig = FindMember(config.GetType(), config, "AutoGatherConfig");
+            if (autoGatherConfig == null)
+            {
+                DalamudApi.Log.Warning("[GBR:Skills] Could not find AutoGatherConfig for gathering preset.");
+                return false;
+            }
+
+            // ── Step 2: Apply AutoGatherConfig global settings ──
+            var agcType = autoGatherConfig.GetType();
+            foreach (var (propName, value) in Gathering.GatheringSkillConfig.AutoGatherConfigSettings)
+            {
+                if (SetPropertyOrField(agcType, autoGatherConfig, propName, value))
+                    DalamudApi.Log.Debug($"[GBR:Skills:Gather] Set AutoGatherConfig.{propName} = {value}");
+                else
+                    DalamudApi.Log.Debug($"[GBR:Skills:Gather] Could not set AutoGatherConfig.{propName}");
+            }
+
+            // ── Step 3: Find the Default ConfigPreset ──
+            var preset = FindDefaultConfigPreset(gbrPluginInstance, gbrType);
+
+            if (preset == null)
+            {
+                DalamudApi.Log.Warning("[GBR:Skills:Gather] Could not find Default ConfigPreset. " +
+                    "AutoGatherConfig settings were applied but skill rotation was not configured.");
+                return true; // partial success — global settings still applied
+            }
+
+            var presetType = preset.GetType();
+            DalamudApi.Log.Debug($"[GBR:Skills:Gather] Found ConfigPreset: {presetType.Name}");
+
+            // ── Step 4: Apply ConfigPreset top-level settings ──
+            foreach (var (propName, value) in Gathering.GatheringSkillConfig.PresetSettings)
+            {
+                if (SetPropertyOrField(presetType, preset, propName, value))
+                    DalamudApi.Log.Information($"[GBR:Skills:Gather] Set Preset.{propName} = {value}");
+                else
+                    DalamudApi.Log.Warning($"[GBR:Skills:Gather] Could not set Preset.{propName}");
+            }
+
+            // ── Step 5: Configure gathering skills via GatherableActions ──
+            var gatherableActions = ReadProperty(presetType, preset, "GatherableActions");
+            if (gatherableActions != null)
+            {
+                var actionsType = gatherableActions.GetType();
+                foreach (var (actionName, childProp, value) in Gathering.GatheringSkillConfig.GatheringSkillSettings)
+                {
+                    var action = ReadProperty(actionsType, gatherableActions, actionName);
+                    if (action != null)
+                    {
+                        if (SetPropertyOrField(action.GetType(), action, childProp, value))
+                            DalamudApi.Log.Information($"[GBR:Skills:Gather] Set GatherableActions.{actionName}.{childProp} = {value}");
+                        else
+                            DalamudApi.Log.Warning($"[GBR:Skills:Gather] Could not set {actionName}.{childProp}");
+                    }
+                    else
+                    {
+                        // Not all GBR versions have all actions — debug-level only
+                        DalamudApi.Log.Debug($"[GBR:Skills:Gather] GatherableActions.{actionName} not found (may not exist in this GBR version).");
+                    }
+                }
+            }
+            else
+            {
+                DalamudApi.Log.Warning("[GBR:Skills:Gather] GatherableActions not found on preset.");
+            }
+
+            // ── Step 6: Configure consumables (cordials) ──
+            if (enableCordials)
+            {
+                var consumables = ReadProperty(presetType, preset, "Consumables");
+                if (consumables != null)
+                {
+                    var consumablesType = consumables.GetType();
+                    foreach (var (consumableName, childProp, value) in Gathering.GatheringSkillConfig.ConsumableSettings)
+                    {
+                        var consumable = ReadProperty(consumablesType, consumables, consumableName);
+                        if (consumable != null)
+                        {
+                            if (SetPropertyOrField(consumable.GetType(), consumable, childProp, value))
+                                DalamudApi.Log.Information($"[GBR:Skills:Gather] Set Consumables.{consumableName}.{childProp} = {value}");
+                            else
+                                DalamudApi.Log.Warning($"[GBR:Skills:Gather] Could not set {consumableName}.{childProp}");
+                        }
+                        else
+                        {
+                            DalamudApi.Log.Warning($"[GBR:Skills:Gather] Consumables.{consumableName} not found.");
+                        }
+                    }
+                }
+                else
+                {
+                    DalamudApi.Log.Warning("[GBR:Skills:Gather] Consumables not found on preset.");
+                }
+            }
+
+            DalamudApi.Log.Information("[GBR:Skills:Gather] Applied gathering skill preset successfully.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DalamudApi.Log.Error(ex, "[GBR:Skills:Gather] Failed to apply gathering skill preset.");
             return false;
         }
     }

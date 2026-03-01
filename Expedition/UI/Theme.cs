@@ -216,7 +216,8 @@ public static class Theme
     }
 
     /// <summary>
-    /// Begins a visual card (subtle background region).
+    /// Begins a visual card (subtle background region) with a fixed height.
+    /// Uses BeginChild — height=0 means "fill remaining space" (only for the last card).
     /// Must pair with EndCard().
     /// </summary>
     public static bool BeginCard(string id, float height = 0)
@@ -236,6 +237,56 @@ public static class Theme
     public static void EndCard()
     {
         ImGui.EndChild();
+    }
+
+    // State for auto-sized cards
+    private static Vector2 _autoCardStart;
+    private static float _autoCardWidth;
+
+    /// <summary>
+    /// Begins an auto-sized visual card that wraps to its content height.
+    /// Unlike BeginCard, this does NOT consume all remaining space.
+    /// Uses draw list channel splitting to draw the background behind the content.
+    /// Must pair with EndCardAuto().
+    /// </summary>
+    public static void BeginCardAuto(string id)
+    {
+        ImGui.PushID(id);
+        _autoCardStart = ImGui.GetCursorScreenPos();
+        _autoCardWidth = ImGui.GetContentRegionAvail().X;
+
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.ChannelsSplit(2);
+        drawList.ChannelsSetCurrent(1); // Content on foreground channel
+
+        ImGui.BeginGroup();
+    }
+
+    /// <summary>
+    /// Ends an auto-sized card and draws the background behind the content.
+    /// </summary>
+    public static void EndCardAuto()
+    {
+        ImGui.EndGroup();
+
+        var drawList = ImGui.GetWindowDrawList();
+
+        // Calculate card bounds from the group
+        var min = _autoCardStart;
+        var max = new Vector2(min.X + _autoCardWidth, ImGui.GetItemRectMax().Y + PadSmall);
+
+        // Draw background + border on background channel (behind content)
+        drawList.ChannelsSetCurrent(0);
+        drawList.AddRectFilled(min, max, ImGui.ColorConvertFloat4ToU32(CardBg), 4f);
+        drawList.AddRect(min, max,
+            ImGui.ColorConvertFloat4ToU32(new Vector4(0.22f, 0.22f, 0.25f, 1f)), 4f);
+
+        drawList.ChannelsMerge();
+
+        // Advance cursor past the card
+        ImGui.SetCursorScreenPos(new Vector2(min.X, max.Y + PadSmall));
+
+        ImGui.PopID();
     }
 
     /// <summary>

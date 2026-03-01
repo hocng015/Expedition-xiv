@@ -1,5 +1,8 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Expedition.Gathering;
+using Expedition.Hotbar;
+using Expedition.PlayerState;
 
 namespace Expedition.UI;
 
@@ -12,8 +15,19 @@ public static class SettingsTab
     private static readonly string[] SolverOptions = {
         "(Default)", "Standard", "Raphael", "Expert", "Progress Only"
     };
+    private static readonly string[] CollectableSolverOptions = {
+        "(Same as general)", "Raphael Recipe Solver", "Standard Recipe Solver", "Expert Recipe Solver"
+    };
+    private static readonly string[] CollectableSolverValues = {
+        "", "Raphael Recipe Solver", "Standard Recipe Solver", "Expert Recipe Solver"
+    };
     private static int selectedSolverIndex;
+    private static int selectedCollectableSolverIndex;
     private static bool initialized;
+
+    // Hotbar status state
+    private static string? hotbarStatus;
+    private static Vector4 hotbarStatusColor;
 
     public static void Draw(Configuration config)
     {
@@ -21,6 +35,8 @@ public static class SettingsTab
         {
             selectedSolverIndex = Array.IndexOf(SolverOptions, config.PreferredSolver);
             if (selectedSolverIndex < 0) selectedSolverIndex = 0;
+            selectedCollectableSolverIndex = Array.IndexOf(CollectableSolverValues, config.CollectablePreferredSolver);
+            if (selectedCollectableSolverIndex < 0) selectedCollectableSolverIndex = 0;
             initialized = true;
         }
 
@@ -41,6 +57,7 @@ public static class SettingsTab
         DrawPrerequisiteSection(config);
         DrawWorkflowSection(config);
         DrawUiSection(config);
+        DrawHotbarSection();
 
         ImGui.EndChild();
     }
@@ -128,6 +145,17 @@ public static class SettingsTab
             config.Save();
         }
         Theme.HelpMarker("Fill downtime between timed node windows by gathering regular materials.");
+
+        var autoSkills = config.AutoApplyGatheringSkills;
+        if (ImGui.Checkbox("Auto-configure GBR gathering skills", ref autoSkills))
+        {
+            config.AutoApplyGatheringSkills = autoSkills;
+            config.Save();
+        }
+        Theme.HelpMarker("When starting a gathering workflow, automatically enable GBR's rotation solver " +
+                          "and all yield-boosting skills (Bountiful Yield, King's Yield II, Solid Age, " +
+                          "Gift of the Land, Tidings, Twelve's Bounty, The Giving Land) plus cordial usage. " +
+                          "Disable this if you prefer to manage GBR's skill config manually.");
 
         ImGui.Spacing();
 
@@ -309,6 +337,17 @@ public static class SettingsTab
             config.Save();
         }
         Theme.HelpMarker("Override Artisan's solver for all recipes in this workflow. Default uses Artisan's per-recipe config.");
+
+        ImGui.SetNextItemWidth(200);
+        if (ImGui.Combo("Collectable/Expert solver", ref selectedCollectableSolverIndex,
+            CollectableSolverOptions, CollectableSolverOptions.Length))
+        {
+            config.CollectablePreferredSolver = CollectableSolverValues[selectedCollectableSolverIndex];
+            config.Save();
+        }
+        Theme.HelpMarker("Solver override for collectable and expert recipes. Raphael is recommended — it computes " +
+                          "a mathematically optimal rotation for your exact stats and targets the highest collectability tier. " +
+                          "Falls back to Standard if Raphael hasn't pre-generated a solution.");
 
         var subFirst = config.CraftSubRecipesFirst;
         if (ImGui.Checkbox("Craft sub-recipes before final item", ref subFirst))
@@ -582,6 +621,137 @@ public static class SettingsTab
         Theme.HelpMarker("Display the current Eorzean time in the menu bar and overlay.");
 
         EndSection();
+    }
+
+    private static void DrawHotbarSection()
+    {
+        if (!ImGui.CollapsingHeader("Controller Hotbar (XHB)")) return;
+
+        BeginSection();
+        ImGui.TextColored(Theme.TextMuted,
+            "Auto-populate cross hotbar (XHB) Sets 1 & 2 with job actions for controller play.");
+        ImGui.Spacing();
+
+        // Show current job levels
+        DrawJobLevel("MIN", JobSwitchManager.MIN);
+        ImGui.SameLine(0, 16);
+        DrawJobLevel("BTN", JobSwitchManager.BTN);
+        ImGui.SameLine(0, 16);
+        DrawJobLevel("FSH", JobSwitchManager.FSH);
+        ImGui.Spacing();
+
+        ImGui.TextColored(Theme.Warning, "Each button overwrites XHB Set 1 and Set 2 for that job.");
+        ImGui.Spacing();
+
+        // --- Gatherers ---
+        ImGui.TextColored(Theme.TextSecondary, "Gatherers");
+        ImGui.Spacing();
+
+        if (Theme.PrimaryButton("MIN##hotbar"))
+            ImGui.OpenPopup("ConfirmHotbar_MIN");
+        ImGui.SameLine(0, 8);
+        if (Theme.PrimaryButton("BTN##hotbar"))
+            ImGui.OpenPopup("ConfirmHotbar_BTN");
+        ImGui.SameLine(0, 8);
+        if (Theme.PrimaryButton("FSH##hotbar"))
+            ImGui.OpenPopup("ConfirmHotbar_FSH");
+        Theme.HelpMarker("Configure XHB for individual gatherer jobs. Actions above your level are skipped.");
+
+        ImGui.Spacing();
+
+        // --- Crafters ---
+        ImGui.TextColored(Theme.TextSecondary, "Crafters");
+        ImGui.Spacing();
+
+        if (Theme.PrimaryButton("Configure All Crafters"))
+            ImGui.OpenPopup("ConfirmHotbar_AllCrafters");
+        Theme.HelpMarker("Applies the same crafting action layout to all 8 DOH jobs (CRP, BSM, ARM, GSM, LTW, WVR, ALC, CUL). " +
+                          "Actions above each job's level are skipped.");
+
+        // --- Confirmation Popups ---
+        var center = ImGui.GetMainViewport().GetCenter();
+
+        DrawHotbarPopup("ConfirmHotbar_MIN", "Miner", center, () =>
+            HotbarService.Configure(JobSwitchManager.MIN, MinerHotbarConfig.Set1, MinerHotbarConfig.Set2));
+
+        DrawHotbarPopup("ConfirmHotbar_BTN", "Botanist", center, () =>
+            HotbarService.Configure(JobSwitchManager.BTN, BotanistHotbarConfig.Set1, BotanistHotbarConfig.Set2));
+
+        DrawHotbarPopup("ConfirmHotbar_FSH", "Fisher", center, () =>
+            FisherHotbarService.ConfigureHotbar());
+
+        DrawHotbarPopup("ConfirmHotbar_AllCrafters", "All Crafters (8 jobs)", center, () =>
+            HotbarService.ConfigureMultiple(
+                [JobSwitchManager.CRP, JobSwitchManager.BSM, JobSwitchManager.ARM, JobSwitchManager.GSM,
+                 JobSwitchManager.LTW, JobSwitchManager.WVR, JobSwitchManager.ALC, JobSwitchManager.CUL],
+                CrafterHotbarConfig.Set1, CrafterHotbarConfig.Set2));
+
+        // --- Emergency Clear ---
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        if (Theme.DangerButton("Clear Active Job XHB"))
+            ImGui.OpenPopup("ConfirmHotbar_ClearActive");
+        Theme.HelpMarker("Emergency clear: wipes all slots on XHB Set 1 & 2 for your current job. " +
+                          "Fixes black/corrupted slots.");
+
+        DrawHotbarPopup("ConfirmHotbar_ClearActive", "your current job's XHB Set 1 & 2", center, () =>
+            HotbarService.ClearActiveJob());
+
+        // Status message
+        if (hotbarStatus != null)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(hotbarStatusColor, hotbarStatus);
+        }
+
+        EndSection();
+    }
+
+    private static void DrawJobLevel(string label, uint classJobId)
+    {
+        var level = JobSwitchManager.GetPlayerJobLevel(classJobId);
+        if (level >= 0)
+            ImGui.Text($"{label} Lv{level}");
+        else
+            ImGui.TextColored(Theme.TextMuted, $"{label} --");
+    }
+
+    private static void DrawHotbarPopup(string popupId, string jobLabel, Vector2 center, Func<HotbarService.ConfigResult> configAction)
+    {
+        ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
+        if (ImGui.BeginPopupModal(popupId, ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            ImGui.Text($"This will overwrite XHB Set 1 and Set 2 for {jobLabel}.");
+            ImGui.Text("Are you sure?");
+            ImGui.Spacing();
+
+            if (Theme.DangerButton("Overwrite", new Vector2(120, 0)))
+            {
+                var result = configAction();
+                if (result.Error != null)
+                {
+                    hotbarStatus = $"Error: {result.Error}";
+                    hotbarStatusColor = Theme.Error;
+                }
+                else
+                {
+                    hotbarStatus = $"{jobLabel}: {result.ActionsSet} actions set, {result.ActionsSkipped} skipped.";
+                    hotbarStatusColor = Theme.Success;
+                }
+
+                ImGui.CloseCurrentPopup();
+            }
+
+            ImGui.SameLine();
+            if (Theme.SecondaryButton("Cancel", new Vector2(120, 0)))
+            {
+                ImGui.CloseCurrentPopup();
+            }
+
+            ImGui.EndPopup();
+        }
     }
 
     // ──────────────────────────────────────────────

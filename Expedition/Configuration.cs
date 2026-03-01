@@ -24,6 +24,7 @@ public sealed class Configuration : IPluginConfiguration
     public bool OptimizeGatherRoute { get; set; } = true;
     public bool PrioritizeTimedNodes { get; set; } = true;
     public bool GatherNormalWhileWaiting { get; set; } = true;
+    public bool AutoApplyGatheringSkills { get; set; } = true;
 
     // --- GP Management ---
     public bool UseCordials { get; set; } = true;
@@ -33,6 +34,7 @@ public sealed class Configuration : IPluginConfiguration
     // --- Crafting ---
     public bool UseCollectableCrafting { get; set; } = true;
     public string PreferredSolver { get; set; } = string.Empty;
+    public string CollectablePreferredSolver { get; set; } = "Raphael Recipe Solver";
     public bool CraftSubRecipesFirst { get; set; } = true;
     public int CraftQuantityBuffer { get; set; } = 0;
     public float CraftStepDelaySeconds { get; set; } = 3.0f;
@@ -84,6 +86,31 @@ public sealed class Configuration : IPluginConfiguration
     public bool DiademAutoApplySkillPreset { get; set; } = true;
     public bool DiademEnableAetherCannon { get; set; } = true;
     public bool DiademEnableCordials { get; set; } = true;
+
+    // --- Cosmic Exploration ---
+    public int CosmicTargetLevel { get; set; } = 100;
+    public int CosmicIceMode { get; set; } // 0=Standard, 1=Relic, 2=Level, 10=Agenda
+    public bool CosmicStopAfterCurrent { get; set; }
+    public bool CosmicStopOnCosmoCredits { get; set; } = true;
+    public int CosmicCosmoCreditsCap { get; set; } = 4000;
+    public bool CosmicStopOnLunarCredits { get; set; } = true;
+    public int CosmicLunarCreditsCap { get; set; } = 4000;
+    public bool CosmicOnlyGrabMission { get; set; }
+    public bool CosmicTurninRelic { get; set; }
+    public bool CosmicFarmAllRelics { get; set; }
+    public bool CosmicStopOnceRelicFinished { get; set; }
+    public bool CosmicRelicSwapJob { get; set; }
+    public uint CosmicRelicBattleJob { get; set; }
+    public bool CosmicRelicStylist { get; set; } = true;
+    public bool CosmicStopWhenLevel { get; set; }
+    public bool CosmicStopOnceHitCosmicScore { get; set; }
+    public int CosmicCosmicScoreCap { get; set; } = 500_000;
+
+    // --- Fishing ---
+    public bool FishingUsePatienceII { get; set; } = true;
+    public bool FishingUseChum { get; set; } = true;
+    public bool FishingUseThaliaksFavor { get; set; } = true;
+    public bool FishingUseCordials { get; set; } = true;
 
     // --- Activation ---
     public string ActivationKey { get; set; } = string.Empty;

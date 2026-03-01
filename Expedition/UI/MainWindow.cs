@@ -114,7 +114,7 @@ public sealed class MainWindow
         DrawHeaderBar();
 
         ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(6, 4));
-        if (ImGui.BeginTabBar("ExpeditionTabs"))
+        if (ImGui.BeginTabBar("ExpeditionTabs", ImGuiTabBarFlags.FittingPolicyScroll))
         {
             var browseFlags = resetTabToBrowse ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
             if (resetTabToBrowse) resetTabToBrowse = false;
@@ -154,9 +154,27 @@ public sealed class MainWindow
                 ImGui.EndTabItem();
             }
 
+            if (ImGui.BeginTabItem("Cosmic"))
+            {
+                CosmicTab.Draw(plugin);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Fishing"))
+            {
+                FishingTab.Draw(plugin);
+                ImGui.EndTabItem();
+            }
+
             if (ImGui.BeginTabItem("Insights"))
             {
                 InsightsTab.Draw(plugin.InsightsEngine);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Changelog"))
+            {
+                ChangelogTab.Draw();
                 ImGui.EndTabItem();
             }
 
@@ -296,7 +314,7 @@ public sealed class MainWindow
     {
         if (!ImGui.BeginMenuBar()) return;
 
-        var (gbr, artisan, vnav) = plugin.Ipc.GetAvailability();
+        var (gbr, artisan, vnav, ice) = plugin.Ipc.GetAvailability();
 
         // GBR status: green = available & AutoGather on, amber = available but AutoGather off, red = unavailable
         if (gbr)
@@ -332,12 +350,26 @@ public sealed class MainWindow
         {
             Theme.StatusDot(Theme.Error, "vnav");
         }
+        ImGui.SameLine(0, Theme.PadLarge);
 
-        if (!gbr || !artisan)
+        // ICE status: green = running, amber = available but idle, red = unavailable
+        if (ice)
+        {
+            var iceRunning = plugin.Ipc.Cosmic.GetIsRunning();
+            Theme.StatusDot(iceRunning ? Theme.Success : Theme.Warning, "ICE");
+        }
+        else
+        {
+            Theme.StatusDot(Theme.Error, "ICE");
+        }
+
+        if (!gbr || !artisan || !ice)
         {
             ImGui.SameLine(0, Theme.PadLarge);
             if (ImGui.SmallButton("Refresh"))
+            {
                 plugin.Ipc.RefreshAvailability();
+            }
         }
 
         ImGui.EndMenuBar();

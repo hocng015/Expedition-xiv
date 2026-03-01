@@ -262,6 +262,17 @@ public sealed class GatheringOrchestrator
         // This also lazily initializes GatherBuddyListManager if needed.
         InjectGatherList();
 
+        // Apply gathering skill preset to ensure GBR uses all available
+        // yield-boosting skills (Bountiful, King's Yield II, Solid Age, Gift of
+        // the Land, Tidings, etc.), the rotation solver, and cordials.
+        if (Expedition.Config.AutoApplyGatheringSkills)
+        {
+            var skillOk = ipc.GatherBuddyLists.ApplyGatheringSkillPreset(
+                enableCordials: Expedition.Config.UseCordials);
+            DalamudApi.Log.Information(
+                $"[Gather:Start] Gathering skill preset applied: {(skillOk ? "success" : "partial/failed")}");
+        }
+
         // Ensure the GBR state tracker is initialized AFTER list injection,
         // because GatherBuddyListManager.Initialize() runs lazily inside InjectGatherList()
         // and we need GbrPluginInstance to be set before we can probe AutoGather internals.

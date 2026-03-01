@@ -6,6 +6,7 @@ using Dalamud.Bindings.ImGui;
 using Expedition.Activation;
 using Expedition.Crafting;
 using Expedition.Diadem;
+using Expedition.Fishing;
 using Expedition.Gathering;
 using Expedition.Insights;
 using Expedition.Inventory;
@@ -39,6 +40,7 @@ public sealed class Expedition : IDalamudPlugin
     public InsightsEngine InsightsEngine { get; }
     public DiademSession DiademSession { get; } = new();
     public DiademNavigator DiademNavigator { get; private set; } = null!;
+    public FishingSession FishingSession { get; private set; } = null!;
 
     private readonly MainWindow mainWindow;
     private readonly OverlayWindow overlayWindow;
@@ -65,6 +67,7 @@ public sealed class Expedition : IDalamudPlugin
 
         Ipc = new IpcManager();
         DiademNavigator = new DiademNavigator(Ipc.Vnavmesh);
+        FishingSession = new FishingSession(Ipc.Vnavmesh, Ipc.AutoHook);
         RecipeResolver = new RecipeResolverService();
         InventoryManager = new InventoryManager();
         GatheringOrchestrator = new GatheringOrchestrator(Ipc);
@@ -87,7 +90,8 @@ public sealed class Expedition : IDalamudPlugin
                           "/expedition activate <key> — Activate the plugin with a license key.\n" +
                           "/expedition craft <item name> [quantity] — Start a full gather+craft workflow.\n" +
                           "/expedition stop — Stop the current workflow.\n" +
-                          "/expedition status — Show current workflow status.",
+                          "/expedition status — Show current workflow status.\n" +
+                          "/expedition fish — Toggle Freestyle Catch fishing session.",
         });
 
         DalamudApi.CommandManager.AddHandler(CommandAlias, new CommandInfo(OnCommand)
@@ -117,6 +121,7 @@ public sealed class Expedition : IDalamudPlugin
         DalamudApi.CommandManager.RemoveHandler(CommandAlias);
 
         InventoryManager.UnsubscribeInventoryEvents();
+        FishingSession.Dispose();
         InsightsEngine.Dispose();
         WorkflowEngine.Dispose();
         RecipeResolver.MobDropLookup.Dispose();
@@ -172,6 +177,10 @@ public sealed class Expedition : IDalamudPlugin
 
             case "status":
                 PrintStatus();
+                break;
+
+            case "fish":
+                HandleFishCommand();
                 break;
 
             case "config":
@@ -235,6 +244,20 @@ public sealed class Expedition : IDalamudPlugin
         WorkflowEngine.Start(recipe, quantity);
     }
 
+    private void HandleFishCommand()
+    {
+        if (FishingSession.IsActive)
+        {
+            FishingSession.Stop();
+            DalamudApi.ChatGui.Print("[Expedition] Freestyle Catch stopped.");
+        }
+        else
+        {
+            FishingSession.Start();
+            DalamudApi.ChatGui.Print("[Expedition] Freestyle Catch started.");
+        }
+    }
+
     private void PrintStatus()
     {
         var state = WorkflowEngine.CurrentState;
@@ -264,11 +287,16 @@ public sealed class Expedition : IDalamudPlugin
             lastRevocationCheck = DateTime.UtcNow;
         }
 
+        // Auto-detect plugin loads/reloads (runs even without activation so the
+        // status bar shows accurate availability when the user opens the UI).
+        Ipc.PollAutoDetect();
+
         // Skip updates when not activated
         if (!ActivationService.IsActivated) return;
 
         WorkflowEngine.Update();
         DiademNavigator.Update();
+        FishingSession.Update();
 
         if (Config.InsightsAutoRefresh)
             InsightsEngine.Update();

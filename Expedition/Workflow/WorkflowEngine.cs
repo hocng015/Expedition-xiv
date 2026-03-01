@@ -911,7 +911,8 @@ public sealed class WorkflowEngine : IDisposable
             }
 
             var solver = string.IsNullOrEmpty(config.PreferredSolver) ? null : config.PreferredSolver;
-            craftingOrchestrator.BuildQueue(ResolvedRecipe!, solver, config.CraftQuantityBuffer);
+            var collectableSolver = string.IsNullOrEmpty(config.CollectablePreferredSolver) ? null : config.CollectablePreferredSolver;
+            craftingOrchestrator.BuildQueue(ResolvedRecipe!, solver, collectableSolver, config.CraftQuantityBuffer);
             craftingOrchestrator.Start();
 
             var classes = JobSwitchManager.GetRequiredCraftClasses(ResolvedRecipe!.CraftOrder);

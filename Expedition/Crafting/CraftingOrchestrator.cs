@@ -27,6 +27,15 @@ public sealed class CraftingOrchestrator
     private const double StartupGraceSeconds = 8.0;
 
     /// <summary>
+    /// Settling delay (seconds) after clearing a stop request before dispatching the next CraftItem.
+    /// After a stop, Artisan's internal task manager needs time to fully clean up (TaskExitCraft,
+    /// closing craft windows, resetting state). Sending CraftItem too early causes Artisan's
+    /// EnduranceNormalStart tasks to conflict with leftover cleanup tasks, leading to repeated
+    /// "Unable to start crafting" failures.
+    /// </summary>
+    private const double PostStopSettlingSeconds = 5.0;
+
+    /// <summary>
     /// Maximum time (seconds) to wait for Artisan to report busy after the grace period.
     /// If Artisan never reports busy within this window, we assume the craft command was lost.
     /// </summary>
@@ -70,6 +79,27 @@ public sealed class CraftingOrchestrator
     private bool artisanEverReportedBusy;
 
     /// <summary>
+    /// Set to true by Stop() after sending SetStopRequest(true). The next Start() checks this flag
+    /// to know that a stop was recently issued and Artisan may still be winding down. Start() must
+    /// NOT clear the stop request until Artisan has actually become idle, otherwise the stop is
+    /// cancelled before Artisan processes it.
+    /// </summary>
+    private bool stopRequestPending;
+
+    /// <summary>
+    /// When true, the next SendCraftCommand call will skip its busy-check guard and force-send
+    /// the CraftItem to Artisan. Set after an idle-wait timeout to break out of the infinite
+    /// timeout→busy-check→timeout loop when Artisan is stuck.
+    /// </summary>
+    private bool forceNextDispatch;
+
+    /// <summary>
+    /// How many consecutive idle-wait timeouts have fired for the current dispatch attempt.
+    /// After the first timeout we force-dispatch; after the second we fail the task.
+    /// </summary>
+    private int idleWaitTimeoutCount;
+
+    /// <summary>
     /// CraftTypeId of the last task we sent to Artisan. Used to detect class switches
     /// between consecutive crafts (e.g., BSM→CRP→BSM). When a class change is detected,
     /// we reset Artisan before sending the next CraftItem to prevent silent failures.
@@ -91,20 +121,41 @@ public sealed class CraftingOrchestrator
     /// <summary>
     /// Builds the crafting queue from a resolved recipe's craft order.
     /// The order is already dependency-sorted (sub-recipes first).
+    /// Solver is selected per-task: collectables use CollectablePreferredSolver,
+    /// other recipes use the general PreferredSolver.
     /// </summary>
-    public void BuildQueue(ResolvedRecipe resolved, string? preferredSolver = null, int quantityBuffer = 0)
+    public void BuildQueue(ResolvedRecipe resolved, string? preferredSolver = null,
+        string? collectablePreferredSolver = null, int quantityBuffer = 0)
     {
         taskQueue.Clear();
         currentTaskIndex = -1;
         delayUntil = null;
         pendingRetry = false;
+        pendingStartNext = false;
+        waitingForArtisanToFinish = false;
+        waitingForArtisanIdle = false;
+        artisanEverReportedBusy = false;
+        forceNextDispatch = false;
+        idleWaitTimeoutCount = 0;
         lastCraftTypeId = -1;
 
         foreach (var step in resolved.CraftOrder)
         {
-            var task = CraftingTask.FromCraftStep(step, preferredSolver);
+            // Smart solver selection: collectables/expert recipes get the collectable solver,
+            // other recipes get the general solver.
+            var solver = (step.Recipe.IsCollectable || step.Recipe.IsExpert)
+                && !string.IsNullOrEmpty(collectablePreferredSolver)
+                    ? collectablePreferredSolver
+                    : preferredSolver;
+
+            var task = CraftingTask.FromCraftStep(step, solver);
             task.Quantity += quantityBuffer;
             taskQueue.Add(task);
+
+            DalamudApi.Log.Debug(
+                $"[Crafting] Queued {task.ItemName} x{task.Quantity}" +
+                $" (collectable={task.IsCollectable}, expert={task.IsExpert}," +
+                $" solver={solver ?? "default"})");
         }
 
         State = taskQueue.Count > 0 ? CraftingOrchestratorState.Ready : CraftingOrchestratorState.Idle;
@@ -115,6 +166,9 @@ public sealed class CraftingOrchestrator
     /// <summary>
     /// Begins executing the crafting queue.
     /// Checks if Artisan is idle before dispatching the first command.
+    /// If a stop was recently issued (stopRequestPending), we keep the stop request active
+    /// until Artisan reports idle, then clear it. This prevents the classic race condition
+    /// where clearing the stop request immediately undoes the stop before Artisan processes it.
     /// </summary>
     public void Start()
     {
@@ -124,36 +178,74 @@ public sealed class CraftingOrchestrator
             return;
         }
 
-        // Clear any lingering Artisan stop request from a previous workflow
-        ipc.Artisan.SetStopRequest(false);
-
         State = CraftingOrchestratorState.Running;
         currentTaskIndex = 0;
 
-        // Gate: if Artisan is still busy from a previous workflow or manual craft,
-        // wait for it to become idle before dispatching the first CraftItem.
-        if (ipc.Artisan.GetIsBusy())
+        var artisanBusy = ipc.Artisan.GetIsBusy();
+
+        if (stopRequestPending && artisanBusy)
         {
+            // A stop was recently issued but Artisan hasn't finished yet.
+            // Do NOT clear the stop request — let Artisan wind down first.
+            // Also re-assert the stop + endurance disable in case they were lost.
+            ipc.Artisan.SetStopRequest(true);
+            ipc.Artisan.SetEnduranceStatus(false);
             DalamudApi.Log.Information(
-                "Artisan is still busy at craft queue start. Waiting for idle before dispatching first task.");
+                "Artisan is still busy after recent stop. Keeping stop request active and waiting for idle.");
+            waitingForArtisanIdle = true;
+            artisanIdleWaitStart = DateTime.Now;
+            pendingStartNext = true;
+        }
+        else if (artisanBusy)
+        {
+            // Artisan is busy but we didn't issue a stop (e.g. manual craft in progress).
+            // Send a stop to clear whatever it's doing, then wait.
+            ipc.Artisan.SetStopRequest(true);
+            ipc.Artisan.SetEnduranceStatus(false);
+            stopRequestPending = true;
+            DalamudApi.Log.Information(
+                "Artisan is busy at craft queue start (no prior stop). Sending stop and waiting for idle.");
             waitingForArtisanIdle = true;
             artisanIdleWaitStart = DateTime.Now;
             pendingStartNext = true;
         }
         else
         {
-            StartCurrentTask();
+            // Artisan is idle — safe to clear any lingering stop request
+            ipc.Artisan.SetStopRequest(false);
+
+            if (stopRequestPending)
+            {
+                // A stop was recently issued and Artisan is now idle, but its internal task
+                // manager may still be cleaning up (TaskExitCraft, closing windows, etc.).
+                // Add a mandatory settling delay before dispatching the next CraftItem to
+                // avoid conflicting with Artisan's cleanup tasks.
+                DalamudApi.Log.Information(
+                    $"Artisan is now idle after recent stop. Clearing stop request and waiting " +
+                    $"{PostStopSettlingSeconds:F0}s for Artisan to fully settle before dispatching.");
+                stopRequestPending = false;
+                delayUntil = DateTime.Now.AddSeconds(PostStopSettlingSeconds);
+                pendingStartNext = true;
+            }
+            else
+            {
+                stopRequestPending = false;
+                StartCurrentTask();
+            }
         }
     }
 
     /// <summary>
     /// Stops all crafting and requests Artisan to stop.
+    /// Sets a flag so the next Start() knows Artisan may still be winding down.
     /// </summary>
     public void Stop()
     {
         if (State == CraftingOrchestratorState.Running)
         {
             ipc.Artisan.SetStopRequest(true);
+            ipc.Artisan.SetEnduranceStatus(false);
+            stopRequestPending = true;
         }
 
         State = CraftingOrchestratorState.Idle;
@@ -162,6 +254,9 @@ public sealed class CraftingOrchestrator
         waitingForArtisanIdle = false;
         delayUntil = null;
         pendingRetry = false;
+        pendingStartNext = false;
+        forceNextDispatch = false;
+        idleWaitTimeoutCount = 0;
         lastCraftTypeId = -1;
         StatusMessage = "Crafting stopped.";
     }
@@ -188,9 +283,43 @@ public sealed class CraftingOrchestrator
                 var waitElapsed = (DateTime.Now - artisanIdleWaitStart).TotalSeconds;
                 if (waitElapsed > PreSendBusyWaitTimeoutSeconds)
                 {
+                    idleWaitTimeoutCount++;
+
+                    if (idleWaitTimeoutCount >= 2)
+                    {
+                        // Artisan is stuck — two full timeout cycles with no response.
+                        // Fail the current task so the user isn't stuck forever.
+                        DalamudApi.Log.Error(
+                            $"Artisan stuck busy after {idleWaitTimeoutCount} timeout cycles ({waitElapsed:F0}s). " +
+                            "Failing current task. Please manually stop Artisan or cancel any in-progress craft.");
+                        waitingForArtisanIdle = false;
+                        ipc.Artisan.SetStopRequest(false);
+                        ipc.Artisan.SetEnduranceStatus(false);
+                        stopRequestPending = false;
+                        forceNextDispatch = false;
+                        idleWaitTimeoutCount = 0;
+
+                        var task = CurrentTask;
+                        if (task != null)
+                        {
+                            task.Status = CraftingTaskStatus.Failed;
+                            task.ErrorMessage = "Artisan stuck busy — could not start craft. Try manually stopping Artisan.";
+                            StatusMessage = $"FAILED: {task.ItemName} — Artisan stuck busy.";
+                            AdvanceToNextTask();
+                        }
+                        return;
+                    }
+
                     DalamudApi.Log.Warning(
-                        $"Artisan still busy after {waitElapsed:F0}s idle-wait timeout. Proceeding anyway.");
+                        $"Artisan still busy after {waitElapsed:F0}s idle-wait timeout (cycle {idleWaitTimeoutCount}). " +
+                        "Force-clearing Artisan state and force-dispatching CraftItem.");
                     waitingForArtisanIdle = false;
+                    // Force-clear all Artisan state
+                    ipc.Artisan.SetStopRequest(false);
+                    ipc.Artisan.SetEnduranceStatus(false);
+                    stopRequestPending = false;
+                    // Tell SendCraftCommand to skip its busy-check guard
+                    forceNextDispatch = true;
                     // Fall through to dispatch below
                 }
                 else
@@ -202,8 +331,28 @@ public sealed class CraftingOrchestrator
             else
             {
                 var waitElapsed = (DateTime.Now - artisanIdleWaitStart).TotalSeconds;
-                DalamudApi.Log.Information($"Artisan is now idle after {waitElapsed:F1}s wait. Dispatching next command.");
                 waitingForArtisanIdle = false;
+                idleWaitTimeoutCount = 0;
+
+                // Now that Artisan is idle, safe to clear the stop request
+                ipc.Artisan.SetStopRequest(false);
+
+                if (stopRequestPending)
+                {
+                    // Artisan just finished winding down from a stop — add a settling delay
+                    // before dispatching the next command so its task manager fully clears.
+                    DalamudApi.Log.Information(
+                        $"Artisan is now idle after {waitElapsed:F1}s wait (post-stop). " +
+                        $"Clearing stop request and waiting {PostStopSettlingSeconds:F0}s for Artisan to settle.");
+                    stopRequestPending = false;
+                    delayUntil = DateTime.Now.AddSeconds(PostStopSettlingSeconds);
+                    // pendingStartNext / pendingRetry stay set — they'll be dispatched after the delay
+                    return;
+                }
+
+                DalamudApi.Log.Information(
+                    $"Artisan is now idle after {waitElapsed:F1}s wait. Dispatching next command.");
+                stopRequestPending = false;
                 // Fall through to dispatch below
             }
 
@@ -235,9 +384,21 @@ public sealed class CraftingOrchestrator
             {
                 DalamudApi.Log.Information(
                     "Inter-task delay expired but Artisan is still busy. Waiting for idle before sending next command.");
+                // If there's a pending stop, keep it active so Artisan actually stops
+                if (stopRequestPending)
+                {
+                    ipc.Artisan.SetStopRequest(true);
+                    ipc.Artisan.SetEnduranceStatus(false);
+                }
                 waitingForArtisanIdle = true;
                 artisanIdleWaitStart = DateTime.Now;
                 return;
+            }
+            // Artisan is idle — clear any pending stop
+            if (stopRequestPending)
+            {
+                ipc.Artisan.SetStopRequest(false);
+                stopRequestPending = false;
             }
 
             if (pendingStartNext)
@@ -388,6 +549,7 @@ public sealed class CraftingOrchestrator
 
                 // Schedule retry with longer delay to give Artisan time to recover
                 pendingRetry = true;
+                pendingStartNext = false;
                 delayUntil = DateTime.Now.AddSeconds(retryDelay);
             }
             else
@@ -413,6 +575,7 @@ public sealed class CraftingOrchestrator
                 StatusMessage = $"Crafting {task.ItemName} {task.QuantityCrafted}/{task.Quantity}, retrying...";
 
                 pendingRetry = true;
+                pendingStartNext = false;
                 delayUntil = DateTime.Now.AddSeconds(retryDelay);
             }
             else
@@ -436,14 +599,22 @@ public sealed class CraftingOrchestrator
     /// </summary>
     private void SendCraftCommand(CraftingTask task, int quantity)
     {
-        // Defensive gate: if Artisan is still busy, defer dispatch to the idle-wait loop
-        // instead of sending a command that will be silently dropped.
         var artisanBusy = ipc.Artisan.GetIsBusy();
         var artisanEndurance = ipc.Artisan.GetEnduranceStatus();
         var artisanStopReq = ipc.Artisan.GetStopRequest();
 
-        if (artisanBusy)
+        // If force-dispatch is set (after an idle-wait timeout), skip the busy guard and
+        // send CraftItem anyway. A new CraftItem may override whatever Artisan is stuck on.
+        if (forceNextDispatch)
         {
+            DalamudApi.Log.Warning(
+                $"Force-dispatching CraftItem for {task.ItemName} (Artisan busy={artisanBusy}). " +
+                "Overriding busy guard after idle-wait timeout.");
+            forceNextDispatch = false;
+        }
+        else if (artisanBusy)
+        {
+            // Normal path: defer to idle-wait loop instead of sending a command that may be dropped.
             DalamudApi.Log.Warning(
                 $"Artisan is STILL BUSY when about to send CraftItem for {task.ItemName}. " +
                 "Deferring to idle-wait gate instead of sending command that would be dropped.");
@@ -526,6 +697,15 @@ public sealed class CraftingOrchestrator
         if (!string.IsNullOrEmpty(task.PreferredSolver))
         {
             ipc.Artisan.ChangeSolver(task.RecipeId, task.PreferredSolver, temporary: true);
+            DalamudApi.Log.Information(
+                $"[Crafting] Solver set to '{task.PreferredSolver}' for {task.ItemName}" +
+                $" (collectable={task.IsCollectable}, expert={task.IsExpert})");
+        }
+        else
+        {
+            DalamudApi.Log.Information(
+                $"[Crafting] Using Artisan's default solver for {task.ItemName}" +
+                $" (collectable={task.IsCollectable}, expert={task.IsExpert})");
         }
 
         StatusMessage = $"Crafting {task.ItemName} x{task.Quantity} ({RecipeResolverService.GetCraftTypeName(task.CraftTypeId)})...";
