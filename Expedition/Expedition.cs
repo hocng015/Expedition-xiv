@@ -41,6 +41,8 @@ public sealed class Expedition : IDalamudPlugin
     public DiademSession DiademSession { get; } = new();
     public DiademNavigator DiademNavigator { get; private set; } = null!;
     public FishingSession FishingSession { get; private set; } = null!;
+    public ConsumableManager ConsumableManager { get; } = new();
+    public BuffTracker BuffTracker { get; } = new();
 
     private readonly MainWindow mainWindow;
     private readonly OverlayWindow overlayWindow;
@@ -64,6 +66,9 @@ public sealed class Expedition : IDalamudPlugin
 
         // Initialize activation key validation
         ActivationService.Initialize(Config);
+
+        // Initialize consumable database for auto-food/pots
+        ConsumableManager.BuildDatabase();
 
         Ipc = new IpcManager();
         DiademNavigator = new DiademNavigator(Ipc.Vnavmesh);
@@ -297,6 +302,29 @@ public sealed class Expedition : IDalamudPlugin
         WorkflowEngine.Update();
         DiademNavigator.Update();
         FishingSession.Update();
+
+        // Auto-consume food/pots during Cosmic Exploration sessions.
+        // Runs every game tick (~16ms) for maximum responsiveness — the transition
+        // window before crafting flags are set can be <100ms.
+        if (CosmicTab.IsSessionActive && (Config.CosmicAutoFood || Config.CosmicAutoPots))
+        {
+            var isGatherer = JobSwitchManager.IsOnGatherer();
+            ConsumableManager.Update(BuffTracker, isGatherer, Config.CosmicAutoFood, Config.CosmicAutoPots);
+        }
+
+        // Deferred ICE start — enables ICE after consumables have been used
+        CosmicTab.CheckDeferredIceStart(this);
+
+        // Auto-consume food/pots during normal workflow (Gathering/Crafting phases)
+        if ((Config.AutoFood || Config.AutoPots) &&
+            WorkflowEngine.CurrentState is Workflow.WorkflowState.Gathering
+                                        or Workflow.WorkflowState.Crafting
+                                        or Workflow.WorkflowState.PreparingGather
+                                        or Workflow.WorkflowState.PreparingCraft)
+        {
+            var isGatherer = JobSwitchManager.IsOnGatherer();
+            ConsumableManager.Update(BuffTracker, isGatherer, Config.AutoFood, Config.AutoPots);
+        }
 
         if (Config.InsightsAutoRefresh)
             InsightsEngine.Update();

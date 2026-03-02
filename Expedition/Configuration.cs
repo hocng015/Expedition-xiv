@@ -45,6 +45,8 @@ public sealed class Configuration : IPluginConfiguration
     public bool WarnOnMissingFood { get; set; } = true;
     public bool WarnOnFoodExpiring { get; set; } = true;
     public int FoodExpiryWarningSeconds { get; set; } = 120;
+    public bool AutoFood { get; set; } = true;
+    public bool AutoPots { get; set; } = true;
 
     // --- Durability ---
     public bool CheckDurabilityBeforeStart { get; set; } = true;
@@ -88,6 +90,8 @@ public sealed class Configuration : IPluginConfiguration
     public bool DiademEnableCordials { get; set; } = true;
 
     // --- Cosmic Exploration ---
+    public bool CosmicAutoFood { get; set; } = true;
+    public bool CosmicAutoPots { get; set; } = true;
     public int CosmicTargetLevel { get; set; } = 100;
     public int CosmicIceMode { get; set; } // 0=Standard, 1=Relic, 2=Level, 10=Agenda
     public bool CosmicStopAfterCurrent { get; set; }

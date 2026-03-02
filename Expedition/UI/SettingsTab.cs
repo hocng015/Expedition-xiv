@@ -443,6 +443,28 @@ public static class SettingsTab
             ImGui.Unindent(20);
         }
 
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.TextColored(Theme.TextMuted, "Auto-consume the best available food/pots during workflows.");
+        ImGui.Spacing();
+
+        var autoFood = config.AutoFood;
+        if (ImGui.Checkbox("Auto-use food", ref autoFood))
+        {
+            config.AutoFood = autoFood;
+            config.Save();
+        }
+        Theme.HelpMarker("Automatically eat the highest item level food in your inventory when the Well Fed buff is missing or expiring.");
+
+        var autoPots = config.AutoPots;
+        if (ImGui.Checkbox("Auto-use potions/medicine", ref autoPots))
+        {
+            config.AutoPots = autoPots;
+            config.Save();
+        }
+        Theme.HelpMarker("Automatically use the highest item level medicine/syrup in your inventory when the Medicated buff is missing or expiring.");
+
         EndSection();
     }
 

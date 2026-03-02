@@ -56,19 +56,39 @@ public sealed class BuffTracker
     }
 
     /// <summary>
+    /// Gets the remaining duration of the medicine buff in seconds. Returns 0 if no buff.
+    /// </summary>
+    public float GetMedicineBuffRemainingSeconds()
+    {
+        return GetStatusRemainingTime(MedicineStatusId);
+    }
+
+    /// <summary>
+    /// Returns true if medicine buff is active but about to expire (within threshold).
+    /// </summary>
+    public bool IsMedicineBuffExpiringSoon(float thresholdSeconds = 120f)
+    {
+        var remaining = GetMedicineBuffRemainingSeconds();
+        return remaining > 0 && remaining < thresholdSeconds;
+    }
+
+    /// <summary>
     /// Generates a diagnostic report of the player's current buff state
     /// relevant to gathering/crafting.
     /// </summary>
     public BuffDiagnostic GetDiagnostic()
     {
         var foodRemaining = GetFoodBuffRemainingSeconds();
+        var medicineRemaining = GetMedicineBuffRemainingSeconds();
 
         return new BuffDiagnostic
         {
             HasFood = foodRemaining > 0,
             FoodRemainingSeconds = foodRemaining,
             FoodExpiringSoon = foodRemaining > 0 && foodRemaining < 120,
-            HasMedicine = HasMedicineBuff(),
+            HasMedicine = medicineRemaining > 0,
+            MedicineRemainingSeconds = medicineRemaining,
+            MedicineExpiringSoon = medicineRemaining > 0 && medicineRemaining < 120,
         };
     }
 
@@ -105,6 +125,8 @@ public sealed class BuffDiagnostic
     public float FoodRemainingSeconds { get; init; }
     public bool FoodExpiringSoon { get; init; }
     public bool HasMedicine { get; init; }
+    public float MedicineRemainingSeconds { get; init; }
+    public bool MedicineExpiringSoon { get; init; }
 
     /// <summary>
     /// Returns warning messages if any buffs are missing or expiring.
@@ -119,10 +141,20 @@ public sealed class BuffDiagnostic
         if (FoodExpiringSoon)
             warnings.Add($"Food buff expiring in {FoodRemainingSeconds:F0}s. Consider re-eating.");
 
+        if (!HasMedicine)
+            warnings.Add("No medicine buff active. Stats may be suboptimal.");
+
+        if (MedicineExpiringSoon)
+            warnings.Add($"Medicine buff expiring in {MedicineRemainingSeconds:F0}s. Consider re-potting.");
+
         return warnings;
     }
 
     public string FoodStatusText => HasFood
         ? $"Food: {FoodRemainingSeconds / 60:F1}m remaining{(FoodExpiringSoon ? " (EXPIRING)" : "")}"
         : "Food: NONE";
+
+    public string MedicineStatusText => HasMedicine
+        ? $"Medicine: {MedicineRemainingSeconds / 60:F1}m remaining{(MedicineExpiringSoon ? " (EXPIRING)" : "")}"
+        : "Medicine: NONE";
 }

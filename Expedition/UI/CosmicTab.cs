@@ -33,6 +33,7 @@ public static class CosmicTab
     // Session state
     private static readonly HashSet<uint> selectedJobIds = new();
     private static bool sessionActive;
+    public static bool IsSessionActive => sessionActive;
     private static DateTime sessionStart;
     private static readonly Dictionary<uint, int> startLevels = new();
     private static string lastIceState = "Idle";
@@ -61,6 +62,36 @@ public static class CosmicTab
     private static bool stopWhenLevel;
     private static bool stopOnceHitCosmicScore;
     private static int cosmicScoreCap = 500_000;
+
+    // Consumable management
+    private static bool cosmicAutoFood = true;
+    private static bool cosmicAutoPots = true;
+
+    // Deferred ICE start (wait for consumables to be used on framework thread first)
+    private static bool pendingIceStart;
+    private static DateTime pendingIceStartTime;
+    private static readonly TimeSpan IceStartDelay = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Called from OnFrameworkUpdate to enable ICE after consumables have been used.
+    /// </summary>
+    public static void CheckDeferredIceStart(Expedition plugin)
+    {
+        if (!pendingIceStart) return;
+        if (DateTime.UtcNow - pendingIceStartTime < IceStartDelay) return;
+
+        pendingIceStart = false;
+        var ice = plugin.Ipc.Cosmic;
+        if (ice.Enable())
+        {
+            DalamudApi.Log.Information("[Cosmic] Deferred ICE start: enabled successfully.");
+        }
+        else
+        {
+            sessionActive = false;
+            DalamudApi.Log.Warning("[Cosmic] Deferred ICE start: failed to enable.");
+        }
+    }
 
     // Polling
     private static DateTime lastPollTime;
@@ -92,6 +123,8 @@ public static class CosmicTab
         stopWhenLevel = config.CosmicStopWhenLevel;
         stopOnceHitCosmicScore = config.CosmicStopOnceHitCosmicScore;
         cosmicScoreCap = config.CosmicCosmicScoreCap;
+        cosmicAutoFood = config.CosmicAutoFood;
+        cosmicAutoPots = config.CosmicAutoPots;
     }
 
     /// <summary>
@@ -117,6 +150,8 @@ public static class CosmicTab
         config.CosmicStopWhenLevel = stopWhenLevel;
         config.CosmicStopOnceHitCosmicScore = stopOnceHitCosmicScore;
         config.CosmicCosmicScoreCap = cosmicScoreCap;
+        config.CosmicAutoFood = cosmicAutoFood;
+        config.CosmicAutoPots = cosmicAutoPots;
         config.Save();
     }
 
@@ -641,6 +676,56 @@ public static class CosmicTab
         ImGui.Spacing();
         ImGui.Spacing();
 
+        // Consumable status — only during active sessions
+        if (sessionActive && (cosmicAutoFood || cosmicAutoPots))
+        {
+            Theme.BeginCardAuto("ConsumableStatus");
+            {
+                ImGui.Spacing();
+                Theme.SectionHeader("Consumables", Theme.Gold);
+                ImGui.Spacing();
+                ImGui.Spacing();
+
+                var bt = plugin.BuffTracker;
+                var cm = plugin.ConsumableManager;
+                var diag = bt.GetDiagnostic();
+
+                // Food buff status
+                if (cosmicAutoFood)
+                {
+                    var foodColor = diag.HasFood
+                        ? (diag.FoodExpiringSoon ? Theme.Warning : Theme.Success)
+                        : Theme.Error;
+                    Theme.StatusDot(foodColor, diag.FoodStatusText);
+                    if (cm.LastFoodUsed != null)
+                    {
+                        ImGui.SameLine(0, Theme.PadLarge);
+                        ImGui.TextColored(Theme.TextMuted, $"Last: {cm.LastFoodUsed}");
+                    }
+                }
+
+                // Medicine buff status
+                if (cosmicAutoPots)
+                {
+                    var medColor = diag.HasMedicine
+                        ? (diag.MedicineExpiringSoon ? Theme.Warning : Theme.Success)
+                        : Theme.Error;
+                    Theme.StatusDot(medColor, diag.MedicineStatusText);
+                    if (cm.LastPotUsed != null)
+                    {
+                        ImGui.SameLine(0, Theme.PadLarge);
+                        ImGui.TextColored(Theme.TextMuted, $"Last: {cm.LastPotUsed}");
+                    }
+                }
+
+                ImGui.Spacing();
+            }
+            Theme.EndCardAuto();
+
+            ImGui.Spacing();
+            ImGui.Spacing();
+        }
+
         // Job progress — show when Level Mode is active or when there's session data
         var showJobProgress = iceMode == IPC.CosmicIpc.ModeLevel || startLevels.Count > 0;
         if (showJobProgress)
@@ -776,6 +861,53 @@ public static class CosmicTab
                     ImGui.Spacing();
                     Theme.KeyValue("Current Mission:", $"#{missionId}");
                 }
+            }
+
+            ImGui.Spacing();
+        }
+        Theme.EndCardAuto();
+
+        ImGui.Spacing();
+        ImGui.Spacing();
+
+        // ── Consumable Management Card ──
+        Theme.BeginCardAuto("ConsumableManagement");
+        {
+            ImGui.Spacing();
+            Theme.SectionHeader("Consumable Management", Theme.Gold);
+            Theme.HelpMarker(
+                "Automatically uses the best available food and medicine/potions\n" +
+                "during Cosmic Exploration sessions.\n\n" +
+                "Selects the highest item level consumable in your inventory,\n" +
+                "preferring HQ over NQ. Detects DoH vs DoL job automatically.\n\n" +
+                "Safe with ICE's gathering food — both check for existing buffs.");
+            ImGui.Spacing();
+            ImGui.Spacing();
+
+            if (ImGui.Checkbox("Auto-use food (Well Fed)##cosmicAutoFood", ref cosmicAutoFood))
+                SaveConfig(Expedition.Config);
+            ImGui.SameLine(0, Theme.Pad);
+            ImGui.TextColored(Theme.TextMuted, "Uses best food when buff missing or <60s");
+
+            ImGui.Spacing();
+
+            if (ImGui.Checkbox("Auto-use potions (Medicated)##cosmicAutoPots", ref cosmicAutoPots))
+                SaveConfig(Expedition.Config);
+            ImGui.SameLine(0, Theme.Pad);
+            ImGui.TextColored(Theme.TextMuted, "Uses best medicine when buff missing or <60s");
+
+            ImGui.Spacing();
+
+            // Show database status
+            var cm = plugin.ConsumableManager;
+            if (cm.DatabaseReady)
+            {
+                ImGui.Spacing();
+                ImGui.TextColored(Theme.TextMuted,
+                    $"  Database: {(cm.HasGatheringFood ? "+" : "-")}Gather Food  " +
+                    $"{(cm.HasCrafterFood ? "+" : "-")}Crafter Food  " +
+                    $"{(cm.HasGatheringPot ? "+" : "-")}Gather Pots  " +
+                    $"{(cm.HasCrafterPot ? "+" : "-")}Crafter Pots");
             }
 
             ImGui.Spacing();
@@ -1133,20 +1265,25 @@ public static class CosmicTab
             }
         }
 
+        // Reset consumable manager for the new session
+        plugin.ConsumableManager.Reset();
+
         // Apply all settings to ICE before starting
         ApplyAllSettingsToIce(plugin);
 
-        // Start ICE
-        if (ice.Enable())
+        // Queue consumables first, then defer ICE enable until after they're used.
+        // UseAction only works on the framework thread, and ICE immediately occupies
+        // the player once enabled, so we must consume before enabling ICE.
         {
-            sessionActive = true;
-            sessionStart = DateTime.UtcNow;
-            DalamudApi.Log.Information($"[Cosmic] Started workflow session: mode={IPC.CosmicIpc.GetModeName(iceMode)}.");
+            var isGatherer = JobSwitchManager.IsOnGatherer();
+            plugin.ConsumableManager.ConsumeNow(
+                plugin.BuffTracker, isGatherer, cosmicAutoFood, cosmicAutoPots);
         }
-        else
-        {
-            DalamudApi.Log.Warning("[Cosmic] Failed to start ICE.");
-        }
+        pendingIceStart = true;
+        pendingIceStartTime = DateTime.UtcNow;
+        sessionActive = true;
+        sessionStart = DateTime.UtcNow;
+        DalamudApi.Log.Information($"[Cosmic] Started workflow session: mode={IPC.CosmicIpc.GetModeName(iceMode)}. ICE start deferred for consumables.");
     }
 
     private static void StopSession(Expedition plugin)
@@ -1154,6 +1291,7 @@ public static class CosmicTab
         var ice = plugin.Ipc.Cosmic;
         ice.Disable();
         sessionActive = false;
+        plugin.ConsumableManager.Reset();
         DalamudApi.Log.Information("[Cosmic] Stopped workflow session.");
     }
 
@@ -1170,8 +1308,8 @@ public static class CosmicTab
 
         lastIceState = ice.GetCurrentState();
 
-        // Check if ICE stopped on its own
-        if (!ice.GetIsRunning() && sessionActive)
+        // Check if ICE stopped on its own (skip during deferred start — ICE isn't enabled yet)
+        if (!ice.GetIsRunning() && sessionActive && !pendingIceStart)
         {
             // In Level Mode, check if all jobs are at target
             if (iceMode == IPC.CosmicIpc.ModeLevel && selectedJobIds.Count > 0)
@@ -1196,4 +1334,8 @@ public static class CosmicTab
             DalamudApi.Log.Information("[Cosmic] ICE stopped. Session ended.");
         }
     }
+
+    // ──────────────────────────────────────────────
+    // Consumable update is now handled in Expedition.OnFrameworkUpdate() for
+    // per-game-tick resolution (~16ms) instead of being tied to the UI render loop.
 }
