@@ -4,6 +4,7 @@ using Dalamud.Bindings.ImGui;
 
 using Expedition.Fishing;
 using Expedition.IPC;
+using Expedition.PlayerState;
 
 namespace Expedition.UI;
 
@@ -126,6 +127,21 @@ public static class FishingTab
             Theme.KeyValue("Rate:", $"  {rate}");
             Theme.KeyValue("GP:", $"  {gpText}");
 
+            // Cordial stats
+            if (session.IsActive || session.CordialsUsed > 0)
+            {
+                var cordialsText = session.CordialsUsed > 0 ? session.CordialsUsed.ToString() : "--";
+                Theme.KeyValue("Cordials:", $"  {cordialsText}");
+            }
+
+            // Cordial inventory counts
+            var cordialCount = FishingActionManager.GetCordialCount(FishingActionManager.Cordial);
+            var hiCordialCount = FishingActionManager.GetCordialCount(FishingActionManager.HiCordial);
+            if (cordialCount > 0 || hiCordialCount > 0)
+            {
+                Theme.KeyValue("Inventory:", $"  {hiCordialCount} Hi-Cordial, {cordialCount} Cordial");
+            }
+
             // Target spot
             if (session.TargetSpot != null)
             {
@@ -175,13 +191,28 @@ public static class FishingTab
             }
 
             var cordials = config.FishingUseCordials;
-            if (ImGui.Checkbox("Cordials (Phase 2)", ref cordials))
+            if (ImGui.Checkbox("Cordials (GP recovery)", ref cordials))
             {
                 config.FishingUseCordials = cordials;
                 config.Save();
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Cordial item usage not yet implemented. Coming in Phase 2.");
+                ImGui.SetTooltip("Use Cordials/Hi-Cordials from inventory to restore GP when low.");
+
+            // Prefer Hi-Cordials sub-checkbox (indented)
+            if (config.FishingUseCordials)
+            {
+                ImGui.Indent(20f);
+                var preferHi = config.FishingPreferHiCordials;
+                if (ImGui.Checkbox("Prefer Hi-Cordials", ref preferHi))
+                {
+                    config.FishingPreferHiCordials = preferHi;
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Hi-Cordials restore 400 GP vs 300 GP for regular Cordials.");
+                ImGui.Unindent(20f);
+            }
 
             ImGui.Spacing();
         }
@@ -202,9 +233,12 @@ public static class FishingTab
             ImGui.Spacing();
 
             // AutoHook
+            var autoHookStatus = autoHook.IsAvailable
+                ? (autoHook.PresetActive ? "AutoHook: Ready (Expedition preset)" : "AutoHook: Ready")
+                : "AutoHook: Not Found";
             Theme.StatusDot(
                 autoHook.IsAvailable ? Theme.Success : Theme.Error,
-                autoHook.IsAvailable ? "AutoHook: Ready" : "AutoHook: Not Found");
+                autoHookStatus);
 
             // vnavmesh
             Theme.StatusDot(

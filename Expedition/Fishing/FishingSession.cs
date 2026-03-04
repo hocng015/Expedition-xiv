@@ -21,8 +21,8 @@ public enum FishingState
 
 /// <summary>
 /// Core fishing state machine. Ticked from OnFrameworkUpdate.
-/// Handles: finding spots, navigating, buff management, GP tracking, and session stats.
-/// Delegates hookset selection and auto-re-cast to AutoHook.
+/// Handles: finding spots, navigating, buff management, GP tracking, cordial usage, and session stats.
+/// Delegates hookset selection (including Double/Triple Hook) to AutoHook via IPC preset.
 /// </summary>
 public sealed class FishingSession : IDisposable
 {
@@ -34,13 +34,14 @@ public sealed class FishingSession : IDisposable
     public string StatusMessage { get; private set; } = string.Empty;
     public DateTime? StartTime { get; private set; }
     public int TotalCatches { get; private set; }
+    public int CordialsUsed { get; private set; }
     public FishingSpotResult? TargetSpot { get; private set; }
 
-    // Throttles
+    // Throttles — tightened for faster response
     private DateTime _lastUpdate;
     private DateTime _lastBuffCheck;
-    private const double UpdateIntervalSec = 0.5;
-    private const double BuffCheckIntervalSec = 5.0;
+    private const double UpdateIntervalSec = 0.25;     // was 0.5
+    private const double BuffCheckIntervalSec = 1.0;    // was 5.0
 
     // Navigation
     private DateTime? _navStartTime;
@@ -53,11 +54,14 @@ public sealed class FishingSession : IDisposable
 
     // Pre-fishing action queue
     private DateTime? _lastActionTime;
-    private const double ActionDelaySec = 1.5;
+    private const double ActionDelaySec = 0.8;          // was 1.5
     private int _preFishingStep;
 
     // GP waiting
     private int _gpNeededForBuffs;
+
+    // Stall detection timeout — tightened
+    private const double StallTimeoutSec = 5.0;         // was 10.0
 
     public FishingSession(VnavmeshIpc vnavmesh, AutoHookIpc autoHook)
     {
@@ -78,11 +82,16 @@ public sealed class FishingSession : IDisposable
         }
 
         TotalCatches = 0;
+        CordialsUsed = 0;
         StartTime = DateTime.UtcNow;
         _wasFishing = false;
         _preFishingStep = 0;
         _lastActionTime = null;
         _lastCastTime = null;
+
+        // Activate AutoHook preset with Double/Triple Hook configuration
+        _autoHook.ActivateExpeditionPreset();
+        _autoHook.SetPluginEnabled(true);
 
         TransitionTo(FishingState.ValidatingPrereqs, "Validating prerequisites...");
     }
@@ -92,8 +101,12 @@ public sealed class FishingSession : IDisposable
         if (State == FishingState.Idle || State == FishingState.Stopped) return;
 
         _vnavmesh.Stop();
+
+        // Clean up AutoHook anonymous presets
+        _autoHook.CleanupPresets();
+
         TransitionTo(FishingState.Stopped, $"Stopped. {TotalCatches} catches in {GetDurationString()}.");
-        DalamudApi.Log.Information($"[Fishing] Session stopped. {TotalCatches} catches.");
+        DalamudApi.Log.Information($"[Fishing] Session stopped. {TotalCatches} catches, {CordialsUsed} cordials used.");
     }
 
     public void Update()
@@ -266,15 +279,20 @@ public sealed class FishingSession : IDisposable
                 goto case 1;
 
             case 1:
-                // Patience II (buff ID 850)
-                if (config.FishingUsePatienceII && gp >= 560 && !HasBuff(850))
+                // Patience II (buff ID 850) — skip if GP insufficient instead of blocking
+                if (config.FishingUsePatienceII && !HasBuff(850))
                 {
-                    if (FishingActionManager.CanUseAction(FishingActionManager.PatienceII))
+                    if (gp >= 560 && FishingActionManager.CanUseAction(FishingActionManager.PatienceII))
                     {
                         FishingActionManager.UseAction(FishingActionManager.PatienceII);
                         DalamudApi.Log.Information("[Fishing] Applied Patience II.");
                         _lastActionTime = DateTime.UtcNow;
                         return;
+                    }
+                    // GP insufficient — skip Patience II, continue fishing without it
+                    if (gp < 560)
+                    {
+                        DalamudApi.Log.Debug("[Fishing] GP too low for Patience II, skipping.");
                     }
                 }
                 _preFishingStep = 2;
@@ -333,32 +351,47 @@ public sealed class FishingSession : IDisposable
             _wasFishing = false;
             DalamudApi.Log.Information($"[Fishing] Catch #{TotalCatches}");
 
-            // Check if buffs need reapplication
+            // Check if buffs need reapplication — react every 1s now (was 5s)
             var now = DateTime.UtcNow;
             if ((now - _lastBuffCheck).TotalSeconds >= BuffCheckIntervalSec)
             {
                 _lastBuffCheck = now;
                 var gp = _gpTracker.GetCurrentGp();
-                var needPatienceII = config.FishingUsePatienceII && !HasBuff(850) && gp >= 560;
-                var needChum = config.FishingUseChum && !HasBuff(763) && gp >= 100;
+                var hasPatienceII = HasBuff(850);
+                var hasChum = HasBuff(763);
+                var needPatienceII = config.FishingUsePatienceII && !hasPatienceII;
+                var needChum = config.FishingUseChum && !hasChum;
 
                 if (needPatienceII || needChum)
                 {
-                    _preFishingStep = needPatienceII ? 1 : 2;
+                    // Smart GP management: determine which step to start from
+                    if (needPatienceII && gp >= 560)
+                    {
+                        // Can afford Patience II — go through full buff sequence
+                        _preFishingStep = 1;
+                    }
+                    else if (needChum && gp >= 100)
+                    {
+                        // Can't afford Patience II but can afford Chum — skip to Chum
+                        _preFishingStep = 2;
+                    }
+                    else
+                    {
+                        // GP too low for any buffs — just re-cast directly
+                        _preFishingStep = 3;
+                    }
                     _lastActionTime = null;
                     TransitionTo(FishingState.PreFishing, "Reapplying buffs...");
                     return;
                 }
 
-                // GP management
-                if (config.FishingUseThaliaksFavor && gp < 200)
+                // GP management — only enter WaitingForGp when GP is critically low
+                // and we have Thaliak's Favor or cordials available to recover
+                if (gp < 100 && (config.FishingUseThaliaksFavor || config.FishingUseCordials))
                 {
                     _gpNeededForBuffs = CalculateGpNeeded(config);
-                    if (_gpNeededForBuffs > gp)
-                    {
-                        TransitionTo(FishingState.WaitingForGp, $"Waiting for GP ({gp}/{_gpNeededForBuffs})...");
-                        return;
-                    }
+                    TransitionTo(FishingState.WaitingForGp, $"Waiting for GP ({gp}/{_gpNeededForBuffs})...");
+                    return;
                 }
             }
 
@@ -373,10 +406,10 @@ public sealed class FishingSession : IDisposable
             StatusMessage = $"Fishing... ({TotalCatches} caught)";
         }
 
-        // Stall detection: if not fishing for >10s, try re-casting
+        // Stall detection: if not fishing for >5s (was 10s), try re-casting
         if (!isFishingNow && !_wasFishing)
         {
-            if (_lastCastTime.HasValue && (DateTime.UtcNow - _lastCastTime.Value).TotalSeconds > 10)
+            if (_lastCastTime.HasValue && (DateTime.UtcNow - _lastCastTime.Value).TotalSeconds > StallTimeoutSec)
             {
                 if (!condition[ConditionFlag.Casting] && !condition[ConditionFlag.Occupied])
                 {
@@ -393,7 +426,7 @@ public sealed class FishingSession : IDisposable
         var gp = _gpTracker.GetCurrentGp();
         var config = Expedition.Config;
 
-        // Try Thaliak's Favor
+        // Try Thaliak's Favor first
         if (config.FishingUseThaliaksFavor && FishingActionManager.CanUseAction(FishingActionManager.ThaliaksFavor))
         {
             FishingActionManager.UseAction(FishingActionManager.ThaliaksFavor);
@@ -401,13 +434,39 @@ public sealed class FishingSession : IDisposable
             _lastActionTime = DateTime.UtcNow;
         }
 
-        StatusMessage = $"Waiting for GP ({gp}/{_gpNeededForBuffs})...";
+        // Try cordials if Thaliak's is on cooldown or unavailable
+        if (config.FishingUseCordials && _gpTracker.CanUseCordial())
+        {
+            var result = FishingActionManager.TryUseCordial(config.FishingPreferHiCordials);
+            if (result != CordialResult.None)
+            {
+                _gpTracker.OnCordialUsed();
+                CordialsUsed++;
+                DalamudApi.Log.Information($"[Fishing] Used {result}. Total cordials: {CordialsUsed}");
+                _lastActionTime = DateTime.UtcNow;
+            }
+        }
+
+        // Update GP after potential usage
+        gp = _gpTracker.GetCurrentGp();
+        var cooldownRemaining = _gpTracker.CordialCooldownRemaining();
+        var cordialStatus = cooldownRemaining > 0
+            ? $"(cordial: {TimeSpan.FromSeconds(cooldownRemaining):m\\:ss})"
+            : "(cordial: ready)";
+        StatusMessage = $"Waiting for GP ({gp}/{_gpNeededForBuffs})... {cordialStatus}";
 
         if (gp >= _gpNeededForBuffs)
         {
             _preFishingStep = 1;
             _lastActionTime = null;
             TransitionTo(FishingState.PreFishing, "GP recovered. Preparing to fish...");
+        }
+        else if (gp >= 100)
+        {
+            // Enough for Chum at least — don't wait, fish with partial buffs
+            _preFishingStep = 2;
+            _lastActionTime = null;
+            TransitionTo(FishingState.PreFishing, "Partial GP. Fishing with Chum only...");
         }
     }
 

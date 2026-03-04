@@ -117,11 +117,16 @@ public sealed class Configuration : IPluginConfiguration
     public bool CosmicStopOnceHitCosmicScore { get; set; }
     public int CosmicCosmicScoreCap { get; set; } = 500_000;
 
+    // --- Cosmic Fishing Override ---
+    public bool CosmicFishingOverrideEnabled { get; set; } = false;
+    public double CosmicFishingInjectionDelayMs { get; set; } = 800;
+
     // --- Fishing ---
     public bool FishingUsePatienceII { get; set; } = true;
     public bool FishingUseChum { get; set; } = true;
     public bool FishingUseThaliaksFavor { get; set; } = true;
     public bool FishingUseCordials { get; set; } = true;
+    public bool FishingPreferHiCordials { get; set; } = true;
 
     // --- Activation ---
     public string ActivationKey { get; set; } = string.Empty;

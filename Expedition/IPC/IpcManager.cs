@@ -117,9 +117,9 @@ public sealed class IpcManager : IDisposable
     /// <summary>
     /// Returns a status summary of plugin availability.
     /// </summary>
-    public (bool gatherBuddy, bool artisan, bool vnavmesh, bool cosmic) GetAvailability()
+    public (bool gatherBuddy, bool artisan, bool vnavmesh, bool cosmic, bool autoHook) GetAvailability()
     {
-        return (GatherBuddy.IsAvailable, Artisan.IsAvailable, Vnavmesh.IsAvailable, Cosmic.IsAvailable);
+        return (GatherBuddy.IsAvailable, Artisan.IsAvailable, Vnavmesh.IsAvailable, Cosmic.IsAvailable, AutoHook.IsAvailable);
     }
 
     /// <summary>

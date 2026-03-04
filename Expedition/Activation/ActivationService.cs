@@ -272,6 +272,25 @@ public static class ActivationService
                     return;
                 }
 
+                // Handle machine limit exceeded (key is being used on another device)
+                if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+                {
+                    var json = await response.Content.ReadAsStringAsync();
+                    var data = JsonSerializer.Deserialize<ServerResponse>(json, _jsonOpts);
+                    var error = data?.Error ?? "Machine limit exceeded";
+
+                    DalamudApi.Log.Warning($"Token refresh denied (machine limit): {error}");
+                    IsActivated = false;
+                    Info = null;
+                    CurrentToken = null;
+                    config.SessionToken = string.Empty;
+                    config.Save();
+                    DalamudApi.ChatGui.PrintError(
+                        "[Expedition] This key is already in use on another device. " +
+                        "Each key may only be used on one machine. Plugin deactivated.");
+                    return;
+                }
+
                 // Other errors — fail-open, keep current token
                 DalamudApi.Log.Warning($"Token refresh failed (HTTP {(int)response.StatusCode}). Keeping current token.");
             }

@@ -276,7 +276,7 @@ public sealed class MainWindow
     {
         if (!ImGui.BeginMenuBar()) return;
 
-        var (gbr, artisan, vnav, ice) = plugin.Ipc.GetAvailability();
+        var (gbr, artisan, vnav, ice, autoHook) = plugin.Ipc.GetAvailability();
 
         // GBR status: green = available & AutoGather on, amber = available but AutoGather off, red = unavailable
         if (gbr)
@@ -324,8 +324,12 @@ public sealed class MainWindow
         {
             Theme.StatusDot(Theme.Error, "ICE");
         }
+        ImGui.SameLine(0, Theme.PadLarge);
 
-        if (!gbr || !artisan || !ice)
+        // AutoHook status: green = available, red = unavailable
+        Theme.StatusDot(autoHook ? Theme.Success : Theme.Error, "AutoHook");
+
+        if (!gbr || !artisan || !ice || !autoHook)
         {
             ImGui.SameLine(0, Theme.PadLarge);
             if (ImGui.SmallButton("Refresh"))

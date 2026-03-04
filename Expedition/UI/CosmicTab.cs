@@ -1,6 +1,7 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 
+using Expedition.Fishing;
 using Expedition.PlayerState;
 
 namespace Expedition.UI;
@@ -67,6 +68,14 @@ public static class CosmicTab
     private static bool cosmicAutoFood = true;
     private static bool cosmicAutoPots = true;
 
+    // Cosmic fishing preset override state
+    private static bool cosmicFishingOverrideEnabled;
+    private static int cosmicFishingInjectionDelayMs = 800;
+    private static string fishingPresetImportText = string.Empty;
+    private static string fishingPresetMissionIdText = string.Empty;
+    private static string fishingPresetTypeDefaultText = string.Empty;
+    private static int fishingPresetTypeComboIndex;
+
     // Deferred ICE start (wait for consumables to be used on framework thread first)
     private static bool pendingIceStart;
     private static DateTime pendingIceStartTime;
@@ -125,6 +134,8 @@ public static class CosmicTab
         cosmicScoreCap = config.CosmicCosmicScoreCap;
         cosmicAutoFood = config.CosmicAutoFood;
         cosmicAutoPots = config.CosmicAutoPots;
+        cosmicFishingOverrideEnabled = config.CosmicFishingOverrideEnabled;
+        cosmicFishingInjectionDelayMs = (int)config.CosmicFishingInjectionDelayMs;
     }
 
     /// <summary>
@@ -152,6 +163,8 @@ public static class CosmicTab
         config.CosmicCosmicScoreCap = cosmicScoreCap;
         config.CosmicAutoFood = cosmicAutoFood;
         config.CosmicAutoPots = cosmicAutoPots;
+        config.CosmicFishingOverrideEnabled = cosmicFishingOverrideEnabled;
+        config.CosmicFishingInjectionDelayMs = cosmicFishingInjectionDelayMs;
         config.Save();
     }
 
@@ -256,6 +269,12 @@ public static class CosmicTab
             if (ImGui.BeginTabItem("Settings"))
             {
                 DrawSettingsTab(plugin);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Fishing"))
+            {
+                DrawFishingTab(plugin);
                 ImGui.EndTabItem();
             }
 
@@ -592,16 +611,16 @@ public static class CosmicTab
                         ImGui.EndCombo();
                     }
 
-                    ImGui.Spacing();
-
-                    // Stylist
-                    if (ImGui.Checkbox("Use Stylist to re-equip tools##stylist", ref relicStylist))
-                        SaveConfig(Expedition.Config);
-                    ImGui.SameLine(0, Theme.Pad);
-                    ImGui.TextColored(Theme.TextMuted, "Runs /stylist after turnin to slot upgraded tool");
-
                     ImGui.Unindent(Theme.PadLarge);
                 }
+
+                ImGui.Spacing();
+
+                // Stylist
+                if (ImGui.Checkbox("Use Stylist to re-equip tools##stylist", ref relicStylist))
+                    SaveConfig(Expedition.Config);
+                ImGui.SameLine(0, Theme.Pad);
+                ImGui.TextColored(Theme.TextMuted, "Runs /stylist after turnin to slot upgraded tool");
 
                 ImGui.Spacing();
             }
@@ -1293,6 +1312,285 @@ public static class CosmicTab
         sessionActive = false;
         plugin.ConsumableManager.Reset();
         DalamudApi.Log.Information("[Cosmic] Stopped workflow session.");
+    }
+
+    // ──────────────────────────────────────────────
+    // Fishing Tab (Preset Overrides)
+    // ──────────────────────────────────────────────
+
+    private static void DrawFishingTab(Expedition plugin)
+    {
+        var presetStore = plugin.CosmicFishingPresetStore;
+
+        ImGui.Spacing();
+        ImGui.BeginChild("CosmicFishing", Vector2.Zero, false);
+
+        // ── Master Toggle + Status Card ──
+        Theme.BeginCardAuto("FishingOverride");
+        {
+            ImGui.Spacing();
+            Theme.SectionHeader("Fishing Preset Override", Theme.Accent);
+            Theme.HelpMarker(
+                "Override ICE's default AutoHook presets with mission-optimized ones.\n\n" +
+                "When enabled, Expedition monitors ICE's state. When ICE enters a fishing\n" +
+                "mission that has a preset override, Expedition waits for ICE to load its\n" +
+                "defaults, then replaces them with your custom presets.\n\n" +
+                "This does NOT modify ICE — it works by pushing new presets to AutoHook\n" +
+                "after ICE's preset load completes.");
+            ImGui.Spacing();
+            ImGui.Spacing();
+
+            // Master toggle
+            if (ImGui.Checkbox("Enable fishing preset overrides##cosmicFishing", ref cosmicFishingOverrideEnabled))
+                SaveConfig(Expedition.Config);
+
+            ImGui.Spacing();
+
+            // Monitor status
+            var monitor = plugin.CosmicFishingMonitor;
+            if (monitor != null && cosmicFishingOverrideEnabled)
+            {
+                var statusColor = monitor.CurrentState switch
+                {
+                    MonitorState.Idle => Theme.TextMuted,
+                    MonitorState.WaitingToInject => Theme.Warning,
+                    MonitorState.Active => Theme.Success,
+                    _ => Theme.TextMuted,
+                };
+                Theme.StatusDot(statusColor, monitor.StatusText);
+            }
+            else if (!cosmicFishingOverrideEnabled)
+            {
+                Theme.StatusDot(Theme.TextMuted, "Disabled");
+            }
+
+            // Preset count
+            if (presetStore != null)
+            {
+                ImGui.Spacing();
+                ImGui.TextColored(Theme.TextMuted,
+                    $"  {presetStore.Overrides.Count} mission override(s), " +
+                    $"{presetStore.TypeDefaults.Count} type default(s)");
+            }
+
+            ImGui.Spacing();
+        }
+        Theme.EndCardAuto();
+
+        ImGui.Spacing();
+        ImGui.Spacing();
+
+        // ── Import Preset Card ──
+        Theme.BeginCardAuto("FishingImport");
+        {
+            ImGui.Spacing();
+            Theme.SectionHeader("Import Preset", Theme.Gold);
+            Theme.HelpMarker(
+                "Import an AH4_ preset string for a specific mission ID.\n\n" +
+                "To get a preset string:\n" +
+                "1. Configure AutoHook with your optimal fishing strategy\n" +
+                "2. Export the preset from AutoHook (copy to clipboard)\n" +
+                "3. Paste the AH4_ string here and specify the mission ID\n\n" +
+                "Multiple presets per mission are supported (for multi-bait configs).");
+            ImGui.Spacing();
+            ImGui.Spacing();
+
+            // Mission ID input
+            ImGui.TextColored(Theme.TextSecondary, "Mission ID");
+            ImGui.SameLine(120);
+            ImGui.SetNextItemWidth(120);
+            ImGui.InputText("##fishMissionId", ref fishingPresetMissionIdText, 16);
+
+            ImGui.Spacing();
+
+            // Preset string input
+            ImGui.TextColored(Theme.TextSecondary, "AH4_ String");
+            ImGui.SameLine(120);
+            ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - 80);
+            ImGui.InputText("##fishPresetStr", ref fishingPresetImportText, 65536);
+
+            ImGui.Spacing();
+
+            // Import button
+            var canImport = !string.IsNullOrWhiteSpace(fishingPresetImportText) &&
+                            fishingPresetImportText.StartsWith("AH4_") &&
+                            uint.TryParse(fishingPresetMissionIdText, out _);
+
+            if (!canImport) ImGui.BeginDisabled();
+            if (Theme.PrimaryButton("Import##fishPreset", new Vector2(100, 26)))
+            {
+                if (uint.TryParse(fishingPresetMissionIdText, out var missionId) && presetStore != null)
+                {
+                    presetStore.ImportPreset(missionId, fishingPresetImportText.Trim());
+                    presetStore.Save();
+                    fishingPresetImportText = string.Empty;
+                    DalamudApi.Log.Information($"[CosmicFishing] Imported preset for mission #{missionId}.");
+                }
+            }
+            if (!canImport) ImGui.EndDisabled();
+
+            ImGui.Spacing();
+            ImGui.Separator();
+            ImGui.Spacing();
+
+            // Type default import
+            ImGui.TextColored(Theme.TextSecondary, "Or import as a type-level default:");
+            ImGui.Spacing();
+
+            ImGui.TextColored(Theme.TextSecondary, "Mission Type");
+            ImGui.SameLine(120);
+            ImGui.SetNextItemWidth(200);
+            string[] typeNames =
+            [
+                "Variety + Time Attack",
+                "Time Attack",
+                "Limited Variety",
+                "Limited Largest Size",
+                "Limited Collectables",
+                "Largest Size",
+                "Standard",
+            ];
+            ImGui.Combo("##fishTypeCombo", ref fishingPresetTypeComboIndex, typeNames, typeNames.Length);
+
+            ImGui.Spacing();
+
+            ImGui.TextColored(Theme.TextSecondary, "AH4_ String");
+            ImGui.SameLine(120);
+            ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - 80);
+            ImGui.InputText("##fishTypePresetStr", ref fishingPresetTypeDefaultText, 65536);
+
+            ImGui.Spacing();
+
+            var canImportType = !string.IsNullOrWhiteSpace(fishingPresetTypeDefaultText) &&
+                                fishingPresetTypeDefaultText.StartsWith("AH4_");
+
+            if (!canImportType) ImGui.BeginDisabled();
+            if (Theme.PrimaryButton("Import Type Default##fishTypePreset", new Vector2(180, 26)))
+            {
+                if (presetStore != null)
+                {
+                    var type = (CosmicFishingMissionType)fishingPresetTypeComboIndex;
+                    presetStore.ImportTypeDefault(type, fishingPresetTypeDefaultText.Trim());
+                    presetStore.Save();
+                    fishingPresetTypeDefaultText = string.Empty;
+                    DalamudApi.Log.Information($"[CosmicFishing] Imported type default for {type}.");
+                }
+            }
+            if (!canImportType) ImGui.EndDisabled();
+
+            ImGui.Spacing();
+        }
+        Theme.EndCardAuto();
+
+        ImGui.Spacing();
+        ImGui.Spacing();
+
+        // ── Configured Overrides List ──
+        if (presetStore != null && (presetStore.Overrides.Count > 0 || presetStore.TypeDefaults.Count > 0))
+        {
+            Theme.BeginCardAuto("FishingOverrideList");
+            {
+                ImGui.Spacing();
+                Theme.SectionHeader("Configured Overrides", Theme.TextSecondary);
+                ImGui.Spacing();
+                ImGui.Spacing();
+
+                // Mission-specific overrides
+                if (presetStore.Overrides.Count > 0)
+                {
+                    ImGui.TextColored(Theme.Accent, "Per-Mission Overrides:");
+                    ImGui.Spacing();
+
+                    uint? toRemove = null;
+                    foreach (var (missionId, presetList) in presetStore.Overrides)
+                    {
+                        ImGui.TextColored(Theme.TextPrimary, $"  Mission #{missionId}");
+                        ImGui.SameLine(200);
+                        ImGui.TextColored(Theme.TextMuted, $"{presetList.Count} preset(s)");
+                        ImGui.SameLine(300);
+                        if (Theme.DangerButton($"Clear##{missionId}", new Vector2(60, 22)))
+                        {
+                            toRemove = missionId;
+                        }
+                    }
+
+                    if (toRemove.HasValue)
+                    {
+                        presetStore.ClearOverride(toRemove.Value);
+                        presetStore.Save();
+                    }
+
+                    ImGui.Spacing();
+                }
+
+                // Type defaults
+                if (presetStore.TypeDefaults.Count > 0)
+                {
+                    ImGui.TextColored(Theme.Accent, "Type Defaults:");
+                    ImGui.Spacing();
+
+                    CosmicFishingMissionType? typeToRemove = null;
+                    foreach (var (type, presetList) in presetStore.TypeDefaults)
+                    {
+                        ImGui.TextColored(Theme.TextPrimary, $"  {type}");
+                        ImGui.SameLine(200);
+                        ImGui.TextColored(Theme.TextMuted, $"{presetList.Count} preset(s)");
+                        ImGui.SameLine(300);
+                        if (Theme.DangerButton($"Clear##{type}", new Vector2(60, 22)))
+                        {
+                            typeToRemove = type;
+                        }
+                    }
+
+                    if (typeToRemove.HasValue)
+                    {
+                        presetStore.ClearTypeDefault(typeToRemove.Value);
+                        presetStore.Save();
+                    }
+
+                    ImGui.Spacing();
+                }
+
+                // Clear all button
+                ImGui.Spacing();
+                if (Theme.DangerButton("Clear All Overrides##fishClearAll", new Vector2(160, 26)))
+                {
+                    presetStore.ClearAll();
+                    presetStore.Save();
+                }
+
+                ImGui.Spacing();
+            }
+            Theme.EndCardAuto();
+
+            ImGui.Spacing();
+            ImGui.Spacing();
+        }
+
+        // ── Injection Delay Setting ──
+        Theme.BeginCardAuto("FishingAdvanced");
+        {
+            ImGui.Spacing();
+            Theme.SectionHeader("Advanced", Theme.TextSecondary);
+            ImGui.Spacing();
+            ImGui.Spacing();
+
+            ImGui.TextColored(Theme.TextSecondary, "Injection Delay (ms)");
+            ImGui.SameLine(200);
+            ImGui.SetNextItemWidth(200);
+            if (ImGui.SliderInt("##fishInjectionDelay", ref cosmicFishingInjectionDelayMs, 200, 2000))
+                SaveConfig(Expedition.Config);
+            Theme.HelpMarker(
+                "Delay before injecting presets after ICE enters a fishing mission.\n\n" +
+                "ICE loads its presets in ~450ms (150ms clear + 100ms per preset).\n" +
+                "The default 800ms gives a safe margin. Increase if presets aren't\n" +
+                "overriding ICE's defaults reliably.");
+
+            ImGui.Spacing();
+        }
+        Theme.EndCardAuto();
+
+        ImGui.EndChild();
     }
 
     private static void PollIceState(Expedition plugin)

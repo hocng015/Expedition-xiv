@@ -41,6 +41,8 @@ public sealed class Expedition : IDalamudPlugin
     public DiademSession DiademSession { get; } = new();
     public DiademNavigator DiademNavigator { get; private set; } = null!;
     public FishingSession FishingSession { get; private set; } = null!;
+    public CosmicFishingPresets CosmicFishingPresetStore { get; private set; } = null!;
+    public CosmicFishingMonitor CosmicFishingMonitor { get; private set; } = null!;
     public ConsumableManager ConsumableManager { get; } = new();
     public BuffTracker BuffTracker { get; } = new();
 
@@ -73,6 +75,8 @@ public sealed class Expedition : IDalamudPlugin
         Ipc = new IpcManager();
         DiademNavigator = new DiademNavigator(Ipc.Vnavmesh);
         FishingSession = new FishingSession(Ipc.Vnavmesh, Ipc.AutoHook);
+        CosmicFishingPresetStore = CosmicFishingPresets.Load();
+        CosmicFishingMonitor = new CosmicFishingMonitor(Ipc.Cosmic, Ipc.AutoHook, CosmicFishingPresetStore);
         RecipeResolver = new RecipeResolverService();
         InventoryManager = new InventoryManager();
         GatheringOrchestrator = new GatheringOrchestrator(Ipc);
@@ -126,6 +130,8 @@ public sealed class Expedition : IDalamudPlugin
         DalamudApi.CommandManager.RemoveHandler(CommandAlias);
 
         InventoryManager.UnsubscribeInventoryEvents();
+        CosmicFishingMonitor.Dispose();
+        CosmicFishingPresetStore.Save();
         FishingSession.Dispose();
         InsightsEngine.Dispose();
         WorkflowEngine.Dispose();
@@ -307,6 +313,10 @@ public sealed class Expedition : IDalamudPlugin
         WorkflowEngine.Update();
         DiademNavigator.Update();
         FishingSession.Update();
+
+        // Cosmic fishing preset injection — monitors ICE state and overrides AutoHook presets
+        if (Config.CosmicFishingOverrideEnabled && CosmicTab.IsSessionActive)
+            CosmicFishingMonitor.Update(Config.CosmicFishingInjectionDelayMs);
 
         // Auto-consume food/pots during Cosmic Exploration sessions.
         // Runs every game tick (~16ms) for maximum responsiveness — the transition
