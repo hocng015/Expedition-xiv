@@ -48,14 +48,14 @@ public static class FishingTab
             pos,
             new Vector2(pos.X + avail, pos.Y + headerH),
             ImGui.ColorConvertFloat4ToU32(new Vector4(0.06f, 0.14f, 0.14f, 1.00f)),
-            4f);
+            Theme.Rounding);
 
         // Teal accent line
         drawList.AddRectFilled(
             pos,
             new Vector2(pos.X + avail, pos.Y + 2),
             ImGui.ColorConvertFloat4ToU32(TealAccent),
-            4f);
+            Theme.Rounding);
 
         // Title
         drawList.AddText(new Vector2(pos.X + Theme.PadLarge, pos.Y + 6f),

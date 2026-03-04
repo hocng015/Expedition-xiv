@@ -49,14 +49,14 @@ public static class DiademTab
             pos,
             new Vector2(pos.X + avail, pos.Y + headerH),
             ImGui.ColorConvertFloat4ToU32(new Vector4(0.08f, 0.10f, 0.16f, 1.00f)),
-            4f);
+            Theme.Rounding);
 
         // Accent line at top
         drawList.AddRectFilled(
             pos,
             new Vector2(pos.X + avail, pos.Y + 2),
             ImGui.ColorConvertFloat4ToU32(Theme.Accent),
-            4f);
+            Theme.Rounding);
 
         // Title
         drawList.AddText(new Vector2(pos.X + Theme.PadLarge, pos.Y + 6f),
@@ -400,12 +400,12 @@ public static class DiademTab
                     pos,
                     new Vector2(pos.X + avail, pos.Y + tipH),
                     ImGui.ColorConvertFloat4ToU32(new Vector4(0.20f, 0.16f, 0.06f, 0.80f)),
-                    4f);
+                    Theme.Rounding);
                 drawList.AddRectFilled(
                     pos,
                     new Vector2(pos.X + 3, pos.Y + tipH),
                     ImGui.ColorConvertFloat4ToU32(Theme.Warning),
-                    4f);
+                    Theme.Rounding);
 
                 drawList.AddText(new Vector2(pos.X + 14, pos.Y + 6),
                     ImGui.ColorConvertFloat4ToU32(Theme.Warning),
@@ -879,14 +879,14 @@ public static class DiademTab
             pos,
             new Vector2(pos.X + avail, pos.Y + bannerH),
             ImGui.ColorConvertFloat4ToU32(new Vector4(0.20f, 0.16f, 0.06f, 0.80f)),
-            4f);
+            Theme.Rounding);
 
         // Amber accent bar
         drawList.AddRectFilled(
             pos,
             new Vector2(pos.X + 3, pos.Y + bannerH),
             ImGui.ColorConvertFloat4ToU32(Theme.Warning),
-            4f);
+            Theme.Rounding);
 
         // Warning text
         drawList.AddText(new Vector2(pos.X + 14, pos.Y + 6),
@@ -983,7 +983,7 @@ public static class DiademTab
     private static void DrawMetricCard(string label, string value, Vector4 color, float width)
     {
         ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.CardBg);
-        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 4f);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, Theme.Rounding);
         ImGui.BeginChild($"Metric_{label}", new Vector2(width, 64), true);
         ImGui.PopStyleVar();
         ImGui.PopStyleColor();
@@ -1016,7 +1016,7 @@ public static class DiademTab
         var cardWidth = (ImGui.GetContentRegionAvail().X - Theme.Pad) / 2;
 
         ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.CardBg);
-        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 4f);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, Theme.Rounding);
         ImGui.BeginChild("XpCard_MIN", new Vector2(cardWidth, 0), true);
         ImGui.PopStyleVar();
         ImGui.PopStyleColor();
@@ -1031,7 +1031,7 @@ public static class DiademTab
         ImGui.SameLine(0, Theme.Pad);
 
         ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.CardBg);
-        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 4f);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, Theme.Rounding);
         ImGui.BeginChild("XpCard_BTN", new Vector2(cardWidth, 0), true);
         ImGui.PopStyleVar();
         ImGui.PopStyleColor();

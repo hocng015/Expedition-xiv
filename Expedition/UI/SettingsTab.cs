@@ -1,5 +1,6 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
 using Expedition.Gathering;
 using Expedition.Hotbar;
 using Expedition.PlayerState;
@@ -7,8 +8,9 @@ using Expedition.PlayerState;
 namespace Expedition.UI;
 
 /// <summary>
-/// Settings UI drawn as a tab within the main window.
-/// Organized into logical sections with descriptions.
+/// Settings UI drawn as a page within the main window.
+/// Uses a two-column layout: left sidebar for category navigation,
+/// right panel for the selected category content.
 /// </summary>
 public static class SettingsTab
 {
@@ -29,6 +31,39 @@ public static class SettingsTab
     private static string? hotbarStatus;
     private static Vector4 hotbarStatusColor;
 
+    // Settings category navigation
+    private enum SettingsCategory
+    {
+        General,
+        Gathering,
+        GpManagement,
+        Crafting,
+        FoodAndBuffs,
+        GearDurability,
+        Prerequisites,
+        Workflow,
+        Dependencies,
+        UI,
+        Hotbar,
+    }
+
+    private static readonly (SettingsCategory Cat, string Label, FontAwesomeIcon Icon)[] Categories =
+    {
+        (SettingsCategory.General,        "General",         FontAwesomeIcon.Cog),
+        (SettingsCategory.Gathering,      "Gathering",       FontAwesomeIcon.Hammer),
+        (SettingsCategory.GpManagement,   "GP Management",   FontAwesomeIcon.Tint),
+        (SettingsCategory.Crafting,       "Crafting",         FontAwesomeIcon.Tools),
+        (SettingsCategory.FoodAndBuffs,   "Food & Buffs",    FontAwesomeIcon.Utensils),
+        (SettingsCategory.GearDurability, "Gear Durability",  FontAwesomeIcon.Shield),
+        (SettingsCategory.Prerequisites,  "Prerequisites",    FontAwesomeIcon.CheckCircle),
+        (SettingsCategory.Workflow,       "Workflow",         FontAwesomeIcon.ProjectDiagram),
+        (SettingsCategory.Dependencies,   "Dependencies",     FontAwesomeIcon.Link),
+        (SettingsCategory.UI,             "UI",               FontAwesomeIcon.Desktop),
+        (SettingsCategory.Hotbar,         "Hotbar (XHB)",     FontAwesomeIcon.ThLarge),
+    };
+
+    private static SettingsCategory selectedCategory = SettingsCategory.General;
+
     public static void Draw(Configuration config)
     {
         if (!initialized)
@@ -40,26 +75,51 @@ public static class SettingsTab
             initialized = true;
         }
 
-        ImGui.Spacing();
-        Theme.SectionHeader("Settings", Theme.Accent);
-        ImGui.Spacing();
-        ImGui.Spacing();
+        // Left sidebar: category list
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, Theme.SidebarBg);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, Theme.RoundingLarge);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(6, 8));
 
-        ImGui.BeginChild("SettingsScroll", Vector2.Zero, false);
-
-        DrawGeneralSection(config);
-        DrawGatheringSection(config);
-        DrawDependencySection(config);
-        DrawGpSection(config);
-        DrawCraftingSection(config);
-        DrawBuffSection(config);
-        DrawDurabilitySection(config);
-        DrawPrerequisiteSection(config);
-        DrawWorkflowSection(config);
-        DrawUiSection(config);
-        DrawHotbarSection();
-
+        if (ImGui.BeginChild("SettingsSidebar", new Vector2(180, -1), true))
+        {
+            ImGui.Spacing();
+            foreach (var (cat, label, icon) in Categories)
+            {
+                if (Theme.SidebarItem(label, cat == selectedCategory, icon))
+                    selectedCategory = cat;
+            }
+        }
         ImGui.EndChild();
+        ImGui.PopStyleVar(2);
+        ImGui.PopStyleColor();
+
+        ImGui.SameLine(0, 5);
+
+        // Right content panel
+        if (ImGui.BeginChild("SettingsContent", ImGui.GetContentRegionAvail(), false))
+        {
+            ImGui.Spacing();
+            DrawCategoryContent(config);
+        }
+        ImGui.EndChild();
+    }
+
+    private static void DrawCategoryContent(Configuration config)
+    {
+        switch (selectedCategory)
+        {
+            case SettingsCategory.General:        DrawGeneralSection(config);        break;
+            case SettingsCategory.Gathering:       DrawGatheringSection(config);      break;
+            case SettingsCategory.GpManagement:    DrawGpSection(config);             break;
+            case SettingsCategory.Crafting:        DrawCraftingSection(config);       break;
+            case SettingsCategory.FoodAndBuffs:    DrawBuffSection(config);           break;
+            case SettingsCategory.GearDurability:  DrawDurabilitySection(config);     break;
+            case SettingsCategory.Prerequisites:   DrawPrerequisiteSection(config);   break;
+            case SettingsCategory.Workflow:        DrawWorkflowSection(config);       break;
+            case SettingsCategory.Dependencies:    DrawDependencySection(config);     break;
+            case SettingsCategory.UI:              DrawUiSection(config);             break;
+            case SettingsCategory.Hotbar:          DrawHotbarSection();               break;
+        }
     }
 
     // ──────────────────────────────────────────────
@@ -68,9 +128,10 @@ public static class SettingsTab
 
     private static void DrawGeneralSection(Configuration config)
     {
-        if (!ImGui.CollapsingHeader("General", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        Theme.SectionHeader("General", Theme.Accent, 66310);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("general_card");
         ImGui.TextColored(Theme.TextMuted, "Basic automation preferences.");
         ImGui.Spacing();
 
@@ -103,14 +164,15 @@ public static class SettingsTab
         }
         Theme.HelpMarker("Automatically extract materia from fully spiritbonded gear during workflows.");
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawGatheringSection(Configuration config)
     {
-        if (!ImGui.CollapsingHeader("Gathering", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        Theme.SectionHeader("Gathering", Theme.Accent, 62116);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("gathering_card");
         ImGui.TextColored(Theme.TextMuted, "Controls how GatherBuddy Reborn gathers materials.");
         ImGui.Spacing();
 
@@ -176,8 +238,9 @@ public static class SettingsTab
             config.Save();
         }
         Theme.HelpMarker("Gather this many extra of each material as a safety margin.");
+        Theme.EndCardAuto();
 
-        ImGui.Spacing();
+        Theme.BeginCardAuto("gather_timeouts_card");
         ImGui.TextColored(Theme.TextMuted, "Completion detection timeouts:");
         ImGui.Spacing();
 
@@ -199,14 +262,15 @@ public static class SettingsTab
         }
         Theme.HelpMarker("Hard timeout: if no inventory change at all for this long, force a retry. This catches cases where gathering silently stopped.");
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawDependencySection(Configuration config)
     {
-        if (!ImGui.CollapsingHeader("Dependency Monitoring")) return;
+        Theme.SectionHeader("Dependencies", Theme.Accent, 60091);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("dep_card");
         ImGui.TextColored(Theme.TextMuted, "Monitor GatherBuddy Reborn and vnavmesh readiness before gathering.");
         ImGui.Spacing();
 
@@ -270,14 +334,15 @@ public static class SettingsTab
             ImGui.Unindent(20);
         }
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawGpSection(Configuration config)
     {
-        if (!ImGui.CollapsingHeader("GP Management")) return;
+        Theme.SectionHeader("GP Management", Theme.Accent, 60002);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("gp_card");
         ImGui.TextColored(Theme.TextMuted, "Gatherer's Points (GP) consumption strategy.");
         ImGui.Spacing();
 
@@ -311,14 +376,15 @@ public static class SettingsTab
         }
         Theme.HelpMarker("Wait for GP to reach this threshold before starting a gathering rotation.");
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawCraftingSection(Configuration config)
     {
-        if (!ImGui.CollapsingHeader("Crafting", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        Theme.SectionHeader("Crafting", Theme.Accent, 62108);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("crafting_card");
         ImGui.TextColored(Theme.TextMuted, "Controls how Artisan handles crafting.");
         ImGui.Spacing();
 
@@ -376,11 +442,9 @@ public static class SettingsTab
         Theme.HelpMarker("Seconds to wait between each craft step and before retries. " +
                           "Increase this if Artisan fails with 'Unable to execute command' errors. " +
                           "Default: 3.0s.");
+        Theme.EndCardAuto();
 
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-
+        Theme.BeginCardAuto("teleport_card");
         var teleportEnabled = config.TeleportBeforeCrafting;
         if (ImGui.Checkbox("Teleport to estate before crafting", ref teleportEnabled))
         {
@@ -403,14 +467,15 @@ public static class SettingsTab
             Theme.HelpMarker("Where to teleport before crafting begins.");
         }
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawBuffSection(Configuration config)
     {
-        if (!ImGui.CollapsingHeader("Food & Buffs")) return;
+        Theme.SectionHeader("Food & Buffs", Theme.Accent, 60083);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("buff_warn_card");
         ImGui.TextColored(Theme.TextMuted, "Monitor food and medicine buff timers.");
         ImGui.Spacing();
 
@@ -443,9 +508,9 @@ public static class SettingsTab
             ImGui.Unindent(20);
         }
 
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
+        Theme.EndCardAuto();
+
+        Theme.BeginCardAuto("buff_auto_card");
         ImGui.TextColored(Theme.TextMuted, "Auto-consume the best available food/pots during workflows.");
         ImGui.Spacing();
 
@@ -465,14 +530,15 @@ public static class SettingsTab
         }
         Theme.HelpMarker("Automatically use the highest item level medicine/syrup in your inventory when the Medicated buff is missing or expiring.");
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawDurabilitySection(Configuration config)
     {
-        if (!ImGui.CollapsingHeader("Gear Durability")) return;
+        Theme.SectionHeader("Gear Durability", Theme.Accent, 60074);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("durability_card");
         ImGui.TextColored(Theme.TextMuted, "Prevent crafting/gathering failure from broken equipment.");
         ImGui.Spacing();
 
@@ -501,14 +567,15 @@ public static class SettingsTab
         }
         Theme.HelpMarker("Show a warning when any equipped gear falls below this durability percentage.");
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawPrerequisiteSection(Configuration config)
     {
-        if (!ImGui.CollapsingHeader("Prerequisites")) return;
+        Theme.SectionHeader("Prerequisites", Theme.Accent, 60071);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("prereq_card");
         ImGui.TextColored(Theme.TextMuted, "Validate requirements before starting a workflow.");
         ImGui.Spacing();
 
@@ -543,14 +610,15 @@ public static class SettingsTab
             ImGui.Unindent(20);
         }
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawWorkflowSection(Configuration config)
     {
-        if (!ImGui.CollapsingHeader("Workflow")) return;
+        Theme.SectionHeader("Workflow", Theme.Accent, 60073);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("workflow_card");
         ImGui.TextColored(Theme.TextMuted, "Fine-tune workflow execution behavior.");
         ImGui.Spacing();
 
@@ -570,7 +638,9 @@ public static class SettingsTab
         }
         Theme.HelpMarker("Show a chat message and toast notification when the workflow finishes.");
 
-        ImGui.Spacing();
+        Theme.EndCardAuto();
+
+        Theme.BeginCardAuto("workflow_adv_card");
         ImGui.TextColored(Theme.TextSecondary, "Advanced");
         ImGui.Spacing();
 
@@ -607,14 +677,15 @@ public static class SettingsTab
             config.Save();
         }
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawUiSection(Configuration config)
     {
-        if (!ImGui.CollapsingHeader("UI")) return;
+        Theme.SectionHeader("UI", Theme.Accent, 60094);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("ui_card");
         ImGui.TextColored(Theme.TextMuted, "Customize the plugin's visual elements.");
         ImGui.Spacing();
 
@@ -642,14 +713,15 @@ public static class SettingsTab
         }
         Theme.HelpMarker("Display the current Eorzean time in the menu bar and overlay.");
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawHotbarSection()
     {
-        if (!ImGui.CollapsingHeader("Controller Hotbar (XHB)")) return;
+        Theme.SectionHeader("Controller Hotbar (XHB)", Theme.Accent, 60026);
+        ImGui.Spacing();
 
-        BeginSection();
+        Theme.BeginCardAuto("hotbar_card");
         ImGui.TextColored(Theme.TextMuted,
             "Auto-populate cross hotbar (XHB) Sets 1 & 2 with job actions for controller play.");
         ImGui.Spacing();
@@ -728,7 +800,7 @@ public static class SettingsTab
             ImGui.TextColored(hotbarStatusColor, hotbarStatus);
         }
 
-        EndSection();
+        Theme.EndCardAuto();
     }
 
     private static void DrawJobLevel(string label, uint classJobId)
@@ -774,22 +846,5 @@ public static class SettingsTab
 
             ImGui.EndPopup();
         }
-    }
-
-    // ──────────────────────────────────────────────
-    // Helpers
-    // ──────────────────────────────────────────────
-
-    private static void BeginSection()
-    {
-        ImGui.Indent(12);
-        ImGui.Spacing();
-    }
-
-    private static void EndSection()
-    {
-        ImGui.Unindent(12);
-        ImGui.Spacing();
-        ImGui.Spacing();
     }
 }

@@ -1,5 +1,7 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
+using Dalamud.Interface.Textures;
 
 namespace Expedition.UI;
 
@@ -59,12 +61,26 @@ public static class Theme
     public const float SectionGap = 12f;
     public const float BadgeHeight = 18f;
 
+    // Rounding
+    public const float Rounding = 8f;
+    public const float RoundingSmall = 4f;
+    public const float RoundingLarge = 10f;
+
+    // Sidebar colors
+    public static readonly Vector4 SidebarBg = new(0.10f, 0.10f, 0.12f, 1.00f);
+    public static readonly Vector4 SidebarHeaderBg = new(0.16f, 0.16f, 0.19f, 1.00f);
+    public static readonly Vector4 SidebarHeaderHover = new(0.20f, 0.20f, 0.24f, 1.00f);
+
+    // Gradient progress bar colors
+    public static readonly Vector4 GradientBlue = new(0.20f, 0.60f, 1.00f, 1.00f);
+    public static readonly Vector4 GradientGreen = new(0.60f, 1.00f, 0.80f, 1.00f);
+
     // --- Reusable Drawing Helpers ---
 
     /// <summary>
-    /// Draws a section header with a colored left accent bar.
+    /// Draws a section header with a colored left accent bar and optional game icon.
     /// </summary>
-    public static void SectionHeader(string label, Vector4? color = null)
+    public static void SectionHeader(string label, Vector4? color = null, uint iconId = 0)
     {
         var c = color ?? Accent;
         var pos = ImGui.GetCursorScreenPos();
@@ -75,7 +91,23 @@ public static class Theme
             new Vector2(pos.X + 3, pos.Y + ImGui.GetTextLineHeight()),
             ImGui.ColorConvertFloat4ToU32(c));
 
-        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 10);
+        var textX = ImGui.GetCursorPosX() + 10;
+
+        if (iconId > 0)
+        {
+            var wrap = DalamudApi.TextureProvider
+                .GetFromGameIcon(new GameIconLookup(iconId))
+                .GetWrapOrDefault();
+            if (wrap != null)
+            {
+                var iconSize = ImGui.GetTextLineHeight();
+                var iconPos = new Vector2(pos.X + 10, pos.Y);
+                drawList.AddImage(wrap.Handle, iconPos, new Vector2(iconPos.X + iconSize, iconPos.Y + iconSize));
+                textX += iconSize + 4;
+            }
+        }
+
+        ImGui.SetCursorPosX(textX);
         ImGui.TextColored(c, label);
     }
 
@@ -120,19 +152,18 @@ public static class Theme
         var textSize = ImGui.CalcTextSize(text);
         var padding = new Vector2(6, 2);
         var bgColor = new Vector4(color.X, color.Y, color.Z, 0.20f);
-        var rounding = 3f;
 
         drawList.AddRectFilled(
             pos,
             new Vector2(pos.X + textSize.X + padding.X * 2, pos.Y + textSize.Y + padding.Y * 2),
             ImGui.ColorConvertFloat4ToU32(bgColor),
-            rounding);
+            RoundingSmall);
 
         drawList.AddRect(
             pos,
             new Vector2(pos.X + textSize.X + padding.X * 2, pos.Y + textSize.Y + padding.Y * 2),
             ImGui.ColorConvertFloat4ToU32(new Vector4(color.X, color.Y, color.Z, 0.50f)),
-            rounding);
+            RoundingSmall);
 
         ImGui.SetCursorPos(ImGui.GetCursorPos() + padding);
         ImGui.TextColored(color, text);
@@ -165,7 +196,7 @@ public static class Theme
             pos,
             new Vector2(pos.X + avail, pos.Y + h),
             ImGui.ColorConvertFloat4ToU32(ProgressBg),
-            3f);
+            RoundingSmall);
 
         // Fill
         if (fraction > 0)
@@ -174,7 +205,7 @@ public static class Theme
                 pos,
                 new Vector2(pos.X + avail * fraction, pos.Y + h),
                 ImGui.ColorConvertFloat4ToU32(fillColor),
-                3f);
+                RoundingSmall);
         }
 
         // Overlay text
@@ -188,6 +219,149 @@ public static class Theme
         }
 
         ImGui.Dummy(new Vector2(avail, h));
+    }
+
+    /// <summary>
+    /// Draws a gradient progress bar (blue→green) with optional gold overcap indicator.
+    /// </summary>
+    public static void GradientProgressBar(float fraction, Vector4 colorLeft, Vector4 colorRight,
+        string? overlay = null, float height = 0, float overcapFraction = 0, Vector4? overcapColor = null)
+    {
+        fraction = Math.Clamp(fraction, 0f, 1f);
+        var h = height > 0 ? height : ImGui.GetFrameHeight();
+        var pos = ImGui.GetCursorScreenPos();
+        var avail = ImGui.GetContentRegionAvail().X;
+        var drawList = ImGui.GetWindowDrawList();
+
+        // Background
+        drawList.AddRectFilled(
+            pos,
+            new Vector2(pos.X + avail, pos.Y + h),
+            ImGui.ColorConvertFloat4ToU32(ProgressBg),
+            RoundingSmall);
+
+        // Gradient fill
+        if (fraction > 0)
+        {
+            var fillMax = new Vector2(pos.X + avail * fraction, pos.Y + h);
+            var colL = ImGui.ColorConvertFloat4ToU32(colorLeft);
+            var colR = ImGui.ColorConvertFloat4ToU32(colorRight);
+            drawList.AddRectFilledMultiColor(pos, fillMax, colL, colR, colR, colL);
+        }
+
+        // Overcap indicator
+        if (overcapFraction > 0)
+        {
+            var oc = Math.Clamp(overcapFraction, 0f, 1f);
+            var ocColor = overcapColor ?? Gold;
+            drawList.AddRectFilled(
+                new Vector2(pos.X + avail * fraction, pos.Y),
+                new Vector2(pos.X + avail * Math.Min(fraction + oc, 1f), pos.Y + h),
+                ImGui.ColorConvertFloat4ToU32(ocColor),
+                RoundingSmall);
+        }
+
+        // Overlay text
+        if (overlay != null)
+        {
+            var textSize = ImGui.CalcTextSize(overlay);
+            var textPos = new Vector2(
+                pos.X + (avail - textSize.X) / 2,
+                pos.Y + (h - textSize.Y) / 2);
+            drawList.AddText(textPos, ImGui.ColorConvertFloat4ToU32(TextPrimary), overlay);
+        }
+
+        ImGui.Dummy(new Vector2(avail, h));
+    }
+
+    /// <summary>
+    /// Draws a collapsible sidebar group header with background and caret indicator.
+    /// </summary>
+    public static bool SidebarGroupHeader(string label, ref bool isExpanded, FontAwesomeIcon icon = 0)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var pos = ImGui.GetCursorScreenPos();
+        var avail = ImGui.GetContentRegionAvail().X;
+        var lineH = ImGui.GetTextLineHeightWithSpacing() + 10;
+
+        // Hit test
+        var isHovered = ImGui.IsMouseHoveringRect(pos, new Vector2(pos.X + avail, pos.Y + lineH));
+
+        // Background
+        var bgColor = isHovered ? SidebarHeaderHover : SidebarHeaderBg;
+        drawList.AddRectFilled(pos, new Vector2(pos.X + avail, pos.Y + lineH),
+            ImGui.ColorConvertFloat4ToU32(bgColor), RoundingSmall);
+
+        var textY = pos.Y + (lineH - ImGui.GetTextLineHeight()) / 2;
+        var labelX = 6f;
+
+        // FontAwesome icon
+        if (icon != 0)
+        {
+            var iconFont = UiBuilder.IconFont;
+            var iconStr = icon.ToIconString();
+            const float iconFontSize = 16f;
+            drawList.AddText(iconFont, iconFontSize, new Vector2(pos.X + 8, textY),
+                ImGui.ColorConvertFloat4ToU32(TextSecondary), iconStr);
+            labelX = 28f;
+        }
+
+        // Label
+        drawList.AddText(new Vector2(pos.X + labelX, textY),
+            ImGui.ColorConvertFloat4ToU32(TextSecondary), label.ToUpperInvariant());
+
+        // Invisible button for click
+        ImGui.InvisibleButton($"##sgh_{label}", new Vector2(avail, lineH));
+        if (ImGui.IsItemClicked())
+            isExpanded = !isExpanded;
+
+        return isExpanded;
+    }
+
+    /// <summary>
+    /// Draws a sidebar navigation item with a left accent bar when selected
+    /// and an optional game icon.
+    /// </summary>
+    public static bool SidebarItem(string label, bool isSelected, FontAwesomeIcon icon = 0)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var pos = ImGui.GetCursorScreenPos();
+        var avail = ImGui.GetContentRegionAvail().X;
+        var lineH = ImGui.GetTextLineHeightWithSpacing() + 10;
+        var labelX = 14f;
+
+        // Selected background
+        if (isSelected)
+        {
+            drawList.AddRectFilled(pos, new Vector2(pos.X + avail, pos.Y + lineH),
+                ImGui.ColorConvertFloat4ToU32(new Vector4(Accent.X, Accent.Y, Accent.Z, 0.15f)),
+                RoundingSmall);
+
+            // Left accent bar (3px)
+            drawList.AddRectFilled(pos, new Vector2(pos.X + 3, pos.Y + lineH),
+                ImGui.ColorConvertFloat4ToU32(Accent));
+        }
+
+        // FontAwesome icon
+        var textColor = isSelected ? Accent : TextSecondary;
+        if (icon != 0)
+        {
+            var iconFont = UiBuilder.IconFont;
+            var iconStr = icon.ToIconString();
+            const float iconFontSize = 18f;
+            var iconY = pos.Y + (lineH - iconFontSize) / 2;
+            drawList.AddText(iconFont, iconFontSize, new Vector2(pos.X + 10, iconY),
+                ImGui.ColorConvertFloat4ToU32(textColor), iconStr);
+            labelX = 34f;
+        }
+
+        // Label
+        drawList.AddText(new Vector2(pos.X + labelX, pos.Y + (lineH - ImGui.GetTextLineHeight()) / 2),
+            ImGui.ColorConvertFloat4ToU32(textColor), label);
+
+        // Invisible button for click
+        ImGui.InvisibleButton($"##si_{label}", new Vector2(avail, lineH));
+        return ImGui.IsItemClicked();
     }
 
     /// <summary>
@@ -223,10 +397,11 @@ public static class Theme
     public static bool BeginCard(string id, float height = 0)
     {
         ImGui.PushStyleColor(ImGuiCol.ChildBg, CardBg);
-        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 4f);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, Rounding);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(Pad, Pad));
         var size = new Vector2(-1, height);
         var result = ImGui.BeginChild(id, size, true);
-        ImGui.PopStyleVar();
+        ImGui.PopStyleVar(2);
         ImGui.PopStyleColor();
         return result;
     }
@@ -273,18 +448,18 @@ public static class Theme
 
         // Calculate card bounds from the group
         var min = _autoCardStart;
-        var max = new Vector2(min.X + _autoCardWidth, ImGui.GetItemRectMax().Y + PadSmall);
+        var max = new Vector2(min.X + _autoCardWidth, ImGui.GetItemRectMax().Y + Pad);
 
         // Draw background + border on background channel (behind content)
         drawList.ChannelsSetCurrent(0);
-        drawList.AddRectFilled(min, max, ImGui.ColorConvertFloat4ToU32(CardBg), 4f);
+        drawList.AddRectFilled(min, max, ImGui.ColorConvertFloat4ToU32(CardBg), Rounding);
         drawList.AddRect(min, max,
-            ImGui.ColorConvertFloat4ToU32(new Vector4(0.22f, 0.22f, 0.25f, 1f)), 4f);
+            ImGui.ColorConvertFloat4ToU32(new Vector4(0.22f, 0.22f, 0.25f, 1f)), Rounding);
 
         drawList.ChannelsMerge();
 
         // Advance cursor past the card
-        ImGui.SetCursorScreenPos(new Vector2(min.X, max.Y + PadSmall));
+        ImGui.SetCursorScreenPos(new Vector2(min.X, max.Y + Pad));
 
         ImGui.PopID();
     }

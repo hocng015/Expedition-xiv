@@ -28,7 +28,7 @@ public sealed class MainWindow
     private RecipeNode? selectedRecipe;
     private ResolvedRecipe? previewResolution;
     private int craftQuantity = 1;
-    private bool resetTabToSettings;
+    private string selectedPage = "Browse";
     private string logFilter = string.Empty;
 
     // Gathering tab state
@@ -55,7 +55,6 @@ public sealed class MainWindow
     private List<GatherableItemInfo> browseGatherResults = new();
     private GatherableItemInfo? selectedGatherItem;
     private bool browseNeedsRefresh = true;
-    private bool resetTabToBrowse;
 
     // CraftType index -> ClassJob RowId (for job icon lookup: icon = 62100 + classJobId)
     private static readonly uint[] CraftTypeToClassJobId = { 8, 9, 10, 11, 12, 13, 14, 15 };
@@ -77,13 +76,13 @@ public sealed class MainWindow
     public void Toggle()
     {
         IsOpen = !IsOpen;
-        if (IsOpen) resetTabToBrowse = true;
+        if (IsOpen) selectedPage = "Browse";
     }
 
     public void OpenSettings()
     {
         IsOpen = true;
-        resetTabToSettings = true;
+        selectedPage = "Settings";
     }
 
     public void Draw()
@@ -113,84 +112,38 @@ public sealed class MainWindow
         DrawMenuBar();
         DrawHeaderBar();
 
-        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(6, 4));
-        if (ImGui.BeginTabBar("ExpeditionTabs", ImGuiTabBarFlags.FittingPolicyScroll))
-        {
-            var browseFlags = resetTabToBrowse ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
-            if (resetTabToBrowse) resetTabToBrowse = false;
-            if (ImGui.BeginTabItem("Browse", browseFlags))
-            {
-                DrawBrowseTab();
-                ImGui.EndTabItem();
-            }
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, Theme.Rounding);
 
-            if (ImGui.BeginTabItem("Recipe"))
-            {
-                DrawRecipeTab();
-                ImGui.EndTabItem();
-            }
+        selectedPage = Sidebar.Draw(selectedPage, Expedition.Config);
+        ImGui.SameLine(0, 5);
 
-            if (ImGui.BeginTabItem("Gathering"))
-            {
-                DrawGatheringTab();
-                ImGui.EndTabItem();
-            }
+        // Body fills remaining space
+        if (ImGui.BeginChild("ExpBody", ImGui.GetContentRegionAvail(), true))
+            DrawSelectedPage();
+        ImGui.EndChild();
 
-            if (ImGui.BeginTabItem("Workflow"))
-            {
-                DrawWorkflowTab();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Log"))
-            {
-                DrawLogTab();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Diadem"))
-            {
-                DiademTab.Draw(plugin);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Cosmic"))
-            {
-                CosmicTab.Draw(plugin);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Fishing"))
-            {
-                FishingTab.Draw(plugin);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Insights"))
-            {
-                InsightsTab.Draw(plugin.InsightsEngine);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Changelog"))
-            {
-                ChangelogTab.Draw();
-                ImGui.EndTabItem();
-            }
-
-            var settingsFlags = resetTabToSettings ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
-            if (resetTabToSettings) resetTabToSettings = false;
-            if (ImGui.BeginTabItem("Settings", settingsFlags))
-            {
-                SettingsTab.Draw(Expedition.Config);
-                ImGui.EndTabItem();
-            }
-
-            ImGui.EndTabBar();
-        }
         ImGui.PopStyleVar();
 
         ImGui.End();
+    }
+
+    private void DrawSelectedPage()
+    {
+        switch (selectedPage)
+        {
+            case "Browse":    DrawBrowseTab();                          break;
+            case "Recipe":    DrawRecipeTab();                          break;
+            case "Gathering": DrawGatheringTab();                       break;
+            case "Workflow":  DrawWorkflowTab();                        break;
+            case "Log":       DrawLogTab();                             break;
+            case "Diadem":    DiademTab.Draw(plugin);                   break;
+            case "Cosmic":    CosmicTab.Draw(plugin);                   break;
+            case "Fishing":   FishingTab.Draw(plugin);                  break;
+            case "Insights":  InsightsTab.Draw(plugin.InsightsEngine);  break;
+            case "Changelog": ChangelogTab.Draw();                      break;
+            case "Settings":  SettingsTab.Draw(Expedition.Config);      break;
+            default:          DrawBrowseTab();                          break;
+        }
     }
 
     // ──────────────────────────────────────────────

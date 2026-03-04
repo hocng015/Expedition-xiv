@@ -75,6 +75,12 @@ public sealed class Configuration : IPluginConfiguration
     public bool ShowOverlay { get; set; } = true;
     public bool ShowDetailedStatus { get; set; } = false;
     public bool ShowEorzeanTime { get; set; } = true;
+    public Dictionary<string, bool> SidebarGroupExpanded { get; set; } = new()
+    {
+        ["workflow"] = true,
+        ["specialized"] = true,
+        ["info"] = false,
+    };
 
     // --- Insights ---
     public int InsightsRefreshIntervalMinutes { get; set; } = 5;
