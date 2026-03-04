@@ -54,7 +54,13 @@ jobs:
         run: dotnet build --configuration Release --no-restore
 
       - name: Install Obfuscar
-        run: dotnet tool install --global Obfuscar.GlobalTool
+        shell: pwsh
+        run: |
+          dotnet tool install --global Obfuscar.GlobalTool
+          $toolsPath = Join-Path $env:USERPROFILE '.dotnet\tools'
+          Write-Host "Tools path: $toolsPath"
+          Get-ChildItem $toolsPath | ForEach-Object { Write-Host "  $_" }
+          "$toolsPath" >> $env:GITHUB_PATH
 
       - name: Obfuscate Release build
         shell: pwsh
@@ -75,9 +81,8 @@ jobs:
           Set-Content obfuscar.xml $xml
           Write-Host "Updated obfuscar.xml with path: $relativePath"
 
-          # Run obfuscation (global tool path)
-          $obfuscar = Join-Path $env:USERPROFILE '.dotnet\tools\obfuscar.exe'
-          & $obfuscar obfuscar.xml
+          # Run obfuscation
+          obfuscar obfuscar.xml
 
           # Replace original DLL with obfuscated version
           Copy-Item "$outputDir\obfuscated\Expedition.dll" "$outputDir\Expedition.dll" -Force
