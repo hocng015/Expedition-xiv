@@ -35,10 +35,22 @@ jobs:
       - name: Build
         run: dotnet build --configuration Release --no-restore
 
+      - name: Find build output
+        id: find_output
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path Expedition/bin -Filter "Expedition.dll" -Recurse | Select-Object -First 1
+          if (-not $dll) {
+            Write-Error "Could not find Expedition.dll"
+            exit 1
+          }
+          Write-Host "Found output at: $($dll.DirectoryName)"
+          "output_dir=$($dll.DirectoryName)" >> $env:GITHUB_OUTPUT
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: Expedition
-          path: Expedition/bin/x64/Release/*/Expedition/
+          path: ${{ steps.find_output.outputs.output_dir }}/
           if-no-files-found: error
           retention-days: 14
