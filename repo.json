@@ -1,34 +1,32 @@
-[
-  {
-    "Author": "Expedition Contributors",
-    "Name": "Expedition",
-    "Punchline": "Automated gather-to-craft recipe workflow orchestrator.",
-    "Description": "Orchestrates GatherBuddy Reborn and Artisan to fully automate the process of gathering materials and crafting any recipe in the game, including collectables, timed nodes, and multi-step dependency chains.",
-    "InternalName": "Expedition",
-    "AssemblyVersion": "2.2.3",
-    "RepoUrl": "https://github.com/hocng015/Expedition-xiv",
-    "IconUrl": "https://raw.githubusercontent.com/hocng015/Expedition-xiv/main/Expedition/Images/icon.png",
-    "ApplicableVersion": "any",
-    "Tags": [
-      "crafting",
-      "gathering",
-      "automation",
-      "recipe",
-      "workflow",
-      "collectable",
-      "insights",
-      "market"
-    ],
-    "DalamudApiLevel": 14,
-    "LoadRequiredState": 0,
-    "LoadSync": false,
-    "CanUnloadAsync": false,
-    "LoadPriority": 0,
-    "IsHide": false,
-    "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/hocng015/Expedition-xiv/releases/download/v2.2.3/Expedition-v2.2.3.zip",
-    "DownloadLinkUpdate": "https://github.com/hocng015/Expedition-xiv/releases/download/v2.2.3/Expedition-v2.2.3.zip",
-    "DownloadLinkTesting": "https://github.com/hocng015/Expedition-xiv/releases/download/v2.2.3/Expedition-v2.2.3.zip",
-    "DownloadCount": 0
-  }
-]
+{
+  "Author": "Expedition Contributors",
+  "Name": "Expedition",
+  "Punchline": "Automated gather-to-craft recipe workflow orchestrator.",
+  "Description": "Orchestrates GatherBuddy Reborn and Artisan to fully automate the process of gathering materials and crafting any recipe in the game, including collectables, timed nodes, and multi-step dependency chains.",
+  "InternalName": "Expedition",
+  "AssemblyVersion": "2.2.3",
+  "RepoUrl": "https://github.com/hocng015/Expedition-xiv",
+  "IconUrl": "https://raw.githubusercontent.com/hocng015/Expedition-xiv/main/Expedition/Images/icon.png",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "crafting",
+    "gathering",
+    "automation",
+    "recipe",
+    "workflow",
+    "collectable",
+    "insights",
+    "market"
+  ],
+  "DalamudApiLevel": 14,
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "IsHide": false,
+  "IsTestingExclusive": false,
+  "DownloadLinkInstall": "https://github.com/hocng015/Expedition-xiv/releases/download/v2.2.3/Expedition-v2.2.3.zip",
+  "DownloadLinkUpdate": "https://github.com/hocng015/Expedition-xiv/releases/download/v2.2.3/Expedition-v2.2.3.zip",
+  "DownloadLinkTesting": "https://github.com/hocng015/Expedition-xiv/releases/download/v2.2.3/Expedition-v2.2.3.zip",
+  "DownloadCount": 0
+}
