@@ -45,8 +45,8 @@ public sealed class Configuration : IPluginConfiguration
     public bool WarnOnMissingFood { get; set; } = true;
     public bool WarnOnFoodExpiring { get; set; } = true;
     public int FoodExpiryWarningSeconds { get; set; } = 120;
-    public bool AutoFood { get; set; } = true;
-    public bool AutoPots { get; set; } = true;
+    public bool AutoFood { get; set; } = false;
+    public bool AutoPots { get; set; } = false;
 
     // --- Durability ---
     public bool CheckDurabilityBeforeStart { get; set; } = true;
