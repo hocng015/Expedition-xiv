@@ -232,18 +232,18 @@ public static class FishingTab
             ImGui.Spacing();
             ImGui.Spacing();
 
-            // AutoHook
+            // AutoHook (required for fishing)
             var autoHookStatus = autoHook.IsAvailable
                 ? (autoHook.PresetActive ? "AutoHook: Ready (Expedition preset)" : "AutoHook: Ready")
-                : "AutoHook: Not Found";
+                : "AutoHook: Not Found (required for fishing)";
             Theme.StatusDot(
                 autoHook.IsAvailable ? Theme.Success : Theme.Error,
                 autoHookStatus);
 
-            // vnavmesh
+            // vnavmesh (optional)
             Theme.StatusDot(
-                vnavmesh.IsAvailable ? Theme.Success : Theme.Warning,
-                vnavmesh.IsAvailable ? "vnavmesh: Ready" : "vnavmesh: Not Found (navigation disabled)");
+                vnavmesh.IsAvailable ? Theme.Success : Theme.TextMuted,
+                vnavmesh.IsAvailable ? "vnavmesh: Ready" : "vnavmesh: Not installed (optional — navigation disabled)");
 
             // Job check
             var player = DalamudApi.ObjectTable.LocalPlayer;

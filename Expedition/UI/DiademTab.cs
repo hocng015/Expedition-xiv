@@ -602,7 +602,7 @@ public static class DiademTab
             }
             else if (!plugin.Ipc.Vnavmesh.IsAvailable)
             {
-                ImGui.TextColored(Theme.Error, "vnavmesh is not available. Install vnavmesh or ensure GBR is loaded.");
+                ImGui.TextColored(Theme.Warning, "vnavmesh is not installed. Install vnavmesh to enable Diadem navigation (optional).");
             }
             else
             {

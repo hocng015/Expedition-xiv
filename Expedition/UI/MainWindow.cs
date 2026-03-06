@@ -439,7 +439,7 @@ public sealed class MainWindow
         }
         ImGui.SameLine(0, Theme.PadLarge);
 
-        // vnavmesh status: green = ready, amber = building, red = unavailable
+        // vnavmesh status (optional): green = ready, amber = building, muted = not installed
         if (vnav)
         {
             var navReady = plugin.Ipc.DependencyMonitor.GetSnapshot().NavReady;
@@ -447,11 +447,11 @@ public sealed class MainWindow
         }
         else
         {
-            Theme.StatusDot(Theme.Error, "vnav");
+            Theme.StatusDot(Theme.TextMuted, "vnav");
         }
         ImGui.SameLine(0, Theme.PadLarge);
 
-        // ICE status: green = running, amber = available but idle, red = unavailable
+        // ICE status (optional): green = running, amber = available but idle, muted = not installed
         if (ice)
         {
             var iceRunning = plugin.Ipc.Cosmic.GetIsRunning();
@@ -459,14 +459,14 @@ public sealed class MainWindow
         }
         else
         {
-            Theme.StatusDot(Theme.Error, "ICE");
+            Theme.StatusDot(Theme.TextMuted, "ICE");
         }
         ImGui.SameLine(0, Theme.PadLarge);
 
-        // AutoHook status: green = available, red = unavailable
-        Theme.StatusDot(autoHook ? Theme.Success : Theme.Error, "AutoHook");
+        // AutoHook status (optional): green = available, muted = not installed
+        Theme.StatusDot(autoHook ? Theme.Success : Theme.TextMuted, "AutoHook");
 
-        if (!gbr || !artisan || !ice || !autoHook)
+        if (!gbr || !artisan)
         {
             ImGui.SameLine(0, Theme.PadLarge);
             if (ImGui.SmallButton("Refresh"))

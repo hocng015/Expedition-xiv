@@ -891,7 +891,7 @@ public static class CosmicTab
 
             if (!ice.IsAvailable)
             {
-                Theme.StatusDot(Theme.Error, "ICE Not Detected");
+                Theme.StatusDot(Theme.TextMuted, "ICE Not Installed (optional)");
                 ImGui.Spacing();
                 ImGui.TextColored(Theme.TextMuted,
                     "Install ICE (Ice's Cosmic Exploration) to use Cosmic Exploration automation.");
