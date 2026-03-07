@@ -170,6 +170,17 @@ public static class CosmicTab
 
     public static void Draw(Expedition plugin)
     {
+        if (!plugin.Ipc.Cosmic.IsAvailable)
+        {
+            PluginGate.Draw(
+                "Cosmic Exploration",
+                "ICE (Ice's Cosmic Exploration)",
+                "Automates Cosmic Exploration workflows including mission selection, gathering, crafting, fishing, turn-in, and re-rolling.",
+                "https://puni.sh/api/repository/ice",
+                plugin.Ipc);
+            return;
+        }
+
         EnsureConfigLoaded(Expedition.Config);
         PollIceState(plugin);
         DrawHeader(plugin);

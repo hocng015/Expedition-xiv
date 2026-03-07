@@ -20,6 +20,17 @@ public static class FishingTab
 
     public static void Draw(Expedition plugin)
     {
+        if (!plugin.Ipc.AutoHook.IsAvailable)
+        {
+            PluginGate.Draw(
+                "Fishing",
+                "AutoHook",
+                "Automates fishing with hookset selection, Double/Triple Hook, auto-cast buffs, and bait management.",
+                null,
+                plugin.Ipc);
+            return;
+        }
+
         var session = plugin.FishingSession;
         var autoHook = plugin.Ipc.AutoHook;
         var vnavmesh = plugin.Ipc.Vnavmesh;

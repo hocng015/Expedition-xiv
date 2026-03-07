@@ -27,6 +27,17 @@ public static class DiademTab
 
     public static void Draw(Expedition plugin)
     {
+        if (!plugin.Ipc.Vnavmesh.IsAvailable)
+        {
+            PluginGate.Draw(
+                "Diadem",
+                "vnavmesh",
+                "Provides pathfinding and navigation for Diadem gathering routes, Windmire jumps, and automated movement.",
+                null,
+                plugin.Ipc);
+            return;
+        }
+
         DrawHeader(plugin);
         ImGui.Spacing();
         DrawSubTabs(plugin);
