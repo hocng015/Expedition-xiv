@@ -15,7 +15,7 @@ In short: the source is open, but distributing access to a running instance shou
 
 ### What the plugin sends to the activation server
 
-When you activate or refresh your session, the plugin contacts `https://expedition-bot-production.up.railway.app` with the following:
+When you activate or refresh your session, the plugin contacts `https://expedition-tsukio.duckdns.org` with the following:
 
 | Request | Data sent | Purpose |
 |---------|-----------|---------|

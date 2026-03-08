@@ -18,7 +18,7 @@ namespace Expedition.Insights;
 /// </summary>
 public sealed class InsightsEngine : IDisposable
 {
-    private const string BotApiBase = "https://expedition-bot-production.up.railway.app";
+    private const string BotApiBase = "https://expedition-tsukio.duckdns.org";
     private const int RequestTimeoutMs = 30000; // 30s — server may need time on first fetch
 
     private readonly HttpClient httpClient;

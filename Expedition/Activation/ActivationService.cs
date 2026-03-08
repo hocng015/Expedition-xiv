@@ -11,8 +11,7 @@ namespace Expedition.Activation;
 /// </summary>
 public static class ActivationService
 {
-    // TODO: Replace with your Railway deployment URL
-    private const string ServerBaseUrl = "https://expedition-bot-production.up.railway.app";
+    private const string ServerBaseUrl = "https://expedition-tsukio.duckdns.org";
 
     private static readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
     private static readonly JsonSerializerOptions _jsonOpts = new() { PropertyNameCaseInsensitive = true };
